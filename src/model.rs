@@ -11,9 +11,14 @@ pub struct PixelStrip {
     pub y: f32, // Normalized 0..1
     pub spacing: f32, // Relative spacing 0..1
     pub rotation: f32, // Radians
-    
+    #[serde(default = "default_color_order")]
+    pub color_order: String, // "RGB", "GRB", "BGR"
     #[serde(skip)]
     pub data: Vec<[u8; 3]>, // RGB Data
+}
+
+fn default_color_order() -> String {
+    "RGB".to_string()
 }
 
 impl Default for PixelStrip {
@@ -25,9 +30,10 @@ impl Default for PixelStrip {
             pixel_count: 50,
             x: 0.5,
             y: 0.5,
-            spacing: 0.01,
+            spacing: 0.05,
             rotation: 0.0,
-            data: vec![],
+            color_order: "RGB".to_string(),
+            data: vec![[0, 0, 0]; 50],
         }
     }
 }

@@ -1,13 +1,14 @@
 use crate::model::{AppState, Mask, PixelStrip, NetworkConfig};
 use crate::audio::AudioListener;
-use sacn::DmxSource; 
+use sacn::source::SacnSource; 
 use std::time::Instant;
 
 use rusty_link::{AblLink, SessionState};
 
 pub struct LightingEngine {
-    sender: DmxSource,
+    sender: SacnSource,
     link: AblLink,
+    registered_universes: std::collections::HashSet<u16>,
     bind_ip: Option<String>,
     pub speed: f32,
     pub latency_ms: f32,
@@ -27,7 +28,8 @@ pub struct LightingEngine {
 
 impl LightingEngine {
     pub fn new() -> Self {
-        let sender = DmxSource::new("Lightspeed").unwrap();
+        let local_addr = std::net::SocketAddr::from(([0, 0, 0, 0], 0));
+        let sender = SacnSource::with_ip("Lightspeed", local_addr).unwrap();
         // Start ensuring multicast send works? 
         // sacn crate defaults fine usually.
         
@@ -38,6 +40,7 @@ impl LightingEngine {
         Self {
             sender,
             link,
+            registered_universes: std::collections::HashSet::new(),
             bind_ip: None,
             speed: 1.0,
             latency_ms: 0.0,
@@ -185,8 +188,12 @@ impl LightingEngine {
         // Coalesce data by universe
         let mut universe_data: std::collections::HashMap<u16, Vec<u8>> = std::collections::HashMap::new();
         
+        let global_universe_offset = state.network.universe.saturating_sub(1);
+
         for strip in &state.strips {
-             let u = strip.universe;
+             // specific strip universe + global offset
+             let u = strip.universe.saturating_add(global_universe_offset);
+             
              // sACN allows multiple strips in one universe if channels don't overlap
              let start = (strip.start_channel as usize).saturating_sub(1);
              
@@ -196,21 +203,73 @@ impl LightingEngine {
              for (i, pixel) in strip.data.iter().enumerate() {
                  let idx = start + i * 3;
                  if idx + 2 < entry.len() {
-                     entry[idx] = pixel[0];
-                     entry[idx+1] = pixel[1];
-                     entry[idx+2] = pixel[2];
+                     match strip.color_order.as_str() {
+                         "GRB" => {
+                             entry[idx] = pixel[1];   // G
+                             entry[idx+1] = pixel[0]; // R
+                             entry[idx+2] = pixel[2]; // B
+                         },
+                         "BGR" => {
+                             entry[idx] = pixel[2];   // B
+                             entry[idx+1] = pixel[1]; // G
+                             entry[idx+2] = pixel[0]; // R
+                         },
+                         _ => { // RGB
+                             entry[idx] = pixel[0];   // R
+                             entry[idx+1] = pixel[1]; // G
+                             entry[idx+2] = pixel[2]; // B
+                         }
+                     }
                  }
              }
         }
         
         // Send Coalesced Universes
+        if beat.fract() < 0.05 { // Rough throttle
+             // println!("Sending sACN... Universes: {}", universe_data.len());
+        }
+        
         for (u, data) in universe_data {
-            if state.network.use_multicast {
-                let _ = self.sender.send(u, &data);
+            if !self.registered_universes.contains(&u) {
+                match self.sender.register_universe(u) {
+                    Ok(_) => {
+                        self.registered_universes.insert(u);
+                        println!("Registered sACN Universe {}", u);
+                    },
+                    Err(e) => {
+                        println!("Failed to register sACN Universe {}: {:?}", u, e);
+                    }
+                }
+            }
+
+            let priority = 100; // Default priority
+            let dst_ip: Option<std::net::SocketAddr> = if state.network.use_multicast {
+                None
             } else {
                 if let Ok(ip) = state.network.unicast_ip.parse::<std::net::IpAddr>() {
-                    let addr = std::net::SocketAddr::new(ip, 5568); // sACN port
-                    let _ = self.sender.send_unicast(u, &data, addr);
+                    Some(std::net::SocketAddr::new(ip, 5568))
+                } else {
+                    None // Fallback
+                }
+            };
+            
+            // Only send if we have a valid config (if Unicast was selected but invalid IP, we might SKIP or fall back)
+            // User code implies we should try to send. 
+            // If !multicast and invalid IP -> dst_ip is None -> Sends Multicast? 
+            // Let's explicitly check:
+            if !state.network.use_multicast && dst_ip.is_none() {
+                // Invalid Unicast IP, skip or log
+                continue;
+            }
+
+            // DEBUG: Print once per second if needed, or just print errors
+            // let _ = self.sender.send(&[u], &data, Some(priority), dst_ip, None);
+            match self.sender.send(&[u], &data, Some(priority), dst_ip, None) {
+                Ok(_) => {
+                    // Success, verbose logging might flood
+                }
+                Err(e) => {
+                    println!("sACN Error sending to U{} (Dest: {:?}): {:?}", u, dst_ip, e);
                 }
             }
         }
@@ -292,7 +351,7 @@ impl LightingEngine {
             // Scanner Logic
             let width = mask.params.get("width").and_then(|v| v.as_f64()).unwrap_or(0.3) as f32;
             let height = mask.params.get("height").and_then(|v| v.as_f64()).unwrap_or(0.3) as f32;
-            let thickness = mask.params.get("thickness").and_then(|v| v.as_f64()).unwrap_or(0.05) as f32;
+            let _thickness = mask.params.get("thickness").and_then(|v| v.as_f64()).unwrap_or(0.05) as f32;
             let m_color = mask.params.get("color").and_then(|v| {
                 let arr = v.as_array()?;
                 Some([
@@ -341,9 +400,15 @@ impl LightingEngine {
             };
 
             let offset_x = (width / 2.0) * osc_val as f32;
-            let bar_center_x = mx + offset_x;
+            let _bar_center_x = mx + offset_x;
             
             let bar_width = mask.params.get("bar_width").and_then(|v| v.as_f64()).unwrap_or(0.1) as f32;
+            
+            // Mask Rotation
+            let rotation_deg = mask.params.get("rotation").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
+            let rot_rad = rotation_deg.to_radians();
+            let cos_rot = rot_rad.cos();
+            let sin_rot = rot_rad.sin();
 
             for i in 0..strips.len() {
                 let strip = &mut strips[i];
@@ -361,12 +426,35 @@ impl LightingEngine {
                     let px = strip.x + rx;
                     let py = strip.y + ry;
                     
-                    // Bounds check
-                    if px >= mx - width/2.0 && px <= mx + width/2.0 &&
-                       py >= my - height/2.0 && py <= my + height/2.0 {
+                    // Transform pixel into Mask's Local Space (Centered at 0, aligned with Mask Rotation)
+                    // Translate to origin
+                    let dx_world = px - mx;
+                    let dy_world = py - my;
+                    
+                    // Rotate by -rot (Inverse of Mask Rotation)
+                    // x' = x cos(-t) - y sin(-t) = x cos t + y sin t
+                    // y' = x sin(-t) + y cos(-t) = -x sin t + y cos t
+                    let mask_local_x = dx_world * cos_rot + dy_world * sin_rot;
+                    let mask_local_y = -dx_world * sin_rot + dy_world * cos_rot;
+                    
+                    // Now check bounds in Local Space
+                    // Width applies to Local X (Scan Axis), Height applies to Local Y
+                    if mask_local_x >= -width/2.0 && mask_local_x <= width/2.0 &&
+                       mask_local_y >= -height/2.0 && mask_local_y <= height/2.0 {
                            
-                        let dx = (px - bar_center_x).abs();
-                        let intensity = (1.0 - dx / bar_width).max(0.0);
+                        // Bar movement is along local X
+                        // Bar center relative to Mask Center (mx)
+                        // offset_x is already relative to center
+                        let bar_center_local_x = offset_x;
+                        
+                        let dist_to_bar = (mask_local_x - bar_center_local_x).abs();
+                        let max_dist = bar_width; 
+                        let mut intensity = (1.0 - dist_to_bar / max_dist).max(0.0);
+                        
+                        let hard_edge = mask.params.get("hard_edge").and_then(|v| v.as_bool()).unwrap_or(false);
+                        if hard_edge {
+                             intensity = if intensity > 0.0 { 1.0 } else { 0.0 };
+                        }
                         
                         if intensity > 0.0 {
                              let r = (final_color[0] as f32 * intensity) as u8;

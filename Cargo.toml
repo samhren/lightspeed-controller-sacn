@@ -6,7 +6,7 @@ edition = "2021"
 [dependencies]
 eframe = "0.24.1" # UI
 url = "=2.5.0"    # Pin to avoid icu_normalizer issue
-sacn = "0.4.4"    # Lighting
+sacn = "0.10.0"    # Lighting
 glam = "0.25.0"   # Math
 serde = { version = "1.0", features = ["derive"] }
 rusty_link = "0.3.3"

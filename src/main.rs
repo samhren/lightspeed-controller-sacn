@@ -20,7 +20,7 @@ enum DragType {
     None,
     Strip,
     Mask,
-    ResizeMask,
+    ResizeMask(usize), // 0: Top, 1: Right, 2: Bottom, 3: Left (Local space)
 }
 
 impl Default for ViewState {
@@ -95,7 +95,7 @@ impl MyApp {
 }
 
 impl eframe::App for MyApp {
-    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         
         // Update Loop (Physics/Networking)
         self.engine.update(&mut self.state);
@@ -154,7 +154,7 @@ impl eframe::App for MyApp {
                         ui.collapsing("Network Output", |ui| {
                             ui.horizontal(|ui| {
                                 ui.label("Universe");
-                                ui.add(egui::DragValue::new(&mut self.state.network.universe).speed(1));
+                                ui.add(egui::DragValue::new(&mut self.state.network.universe).speed(1).clamp_range(1..=63999));
                             });
                             
                             ui.checkbox(&mut self.state.network.use_multicast, "Multicast (Broadcast)");
@@ -195,13 +195,23 @@ impl eframe::App for MyApp {
                                     });
                                     ui.horizontal(|ui| {
                                         ui.label("Config:");
-                                        ui.add(egui::DragValue::new(&mut s.universe).prefix("Uni: "));
+                                        ui.add(egui::DragValue::new(&mut s.universe).prefix("Uni: ").clamp_range(1..=63999));
                                         ui.add(egui::DragValue::new(&mut s.start_channel).prefix("Ch: "));
                                     });
                                     ui.horizontal(|ui| {
                                         ui.label("Layout:");
                                         ui.add(egui::DragValue::new(&mut s.pixel_count).prefix("Count: "));
                                         ui.add(egui::Slider::new(&mut s.spacing, 0.001..=0.05).text("Spacing"));
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.label("Protocol:");
+                                        egui::ComboBox::from_id_source(format!("proto_{}", s.id))
+                                            .selected_text(&s.color_order)
+                                            .show_ui(ui, |ui| {
+                                                ui.selectable_value(&mut s.color_order, "RGB".to_string(), "RGB");
+                                                ui.selectable_value(&mut s.color_order, "GRB".to_string(), "GRB");
+                                                ui.selectable_value(&mut s.color_order, "BGR".to_string(), "BGR");
+                                            });
                                     });
                                     
                                     if ui.button("🗑 Delete Strip").clicked() {
@@ -268,25 +278,39 @@ impl eframe::App for MyApp {
                                     if m.mask_type == "scanner" {
                                         // Width
                                         let mut w = m.params.get("width").and_then(|v| v.as_f64()).unwrap_or(0.3) as f32;
-                                        if ui.add(egui::Slider::new(&mut w, 0.0..=1.0).text("Width")).changed() {
+                                        if ui.add(egui::Slider::new(&mut w, 0.0..=5.0).text("Width")).changed() {
                                             m.params.insert("width".into(), w.into());
                                             needs_save = true;
                                         }
                                         // Height
                                         let mut h = m.params.get("height").and_then(|v| v.as_f64()).unwrap_or(0.3) as f32;
-                                        if ui.add(egui::Slider::new(&mut h, 0.0..=1.0).text("Height")).changed() {
+                                        if ui.add(egui::Slider::new(&mut h, 0.0..=5.0).text("Height")).changed() {
                                             m.params.insert("height".into(), h.into());
                                             needs_save = true;
                                         }
+                                        
+                                        // Hard Edge
+                                        let mut hard_edge = m.params.get("hard_edge").and_then(|v| v.as_bool()).unwrap_or(false);
+                                        if ui.checkbox(&mut hard_edge, "Hard Edge").changed() {
+                                            m.params.insert("hard_edge".into(), hard_edge.into());
+                                            needs_save = true;
+                                        }
+                                        
                                         // Speed
                                         let mut s = m.params.get("speed").and_then(|v| v.as_f64()).unwrap_or(1.0) as f32;
                                         if ui.add(egui::Slider::new(&mut s, 0.1..=5.0).text("Speed")).changed() {
                                             m.params.insert("speed".into(), s.into());
                                             needs_save = true;
                                         }
+                                        // Rotation
+                                        let mut rotation = m.params.get("rotation").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
+                                        if ui.add(egui::Slider::new(&mut rotation, 0.0..=360.0).text("Rotation")).changed() {
+                                            m.params.insert("rotation".into(), rotation.into());
+                                            needs_save = true;
+                                        }
                                     } else if m.mask_type == "radial" {
                                         let mut r = m.params.get("radius").and_then(|v| v.as_f64()).unwrap_or(0.2) as f32;
-                                        if ui.add(egui::Slider::new(&mut r, 0.0..=1.0).text("Radius")).changed() {
+                                        if ui.add(egui::Slider::new(&mut r, 0.0..=5.0).text("Radius")).changed() {
                                             m.params.insert("radius".into(), r.into());
                                             needs_save = true;
                                         }
@@ -343,7 +367,7 @@ impl eframe::App for MyApp {
 
                                         let mut changed = false;
                                         ui.horizontal_wrapped(|ui| {
-                                            for (i, rgb) in colors.iter_mut().enumerate() {
+                                            for (_i, rgb) in colors.iter_mut().enumerate() {
                                                 let mut c = egui::Color32::from_rgb(rgb[0], rgb[1], rgb[2]);
                                                 if ui.color_edit_button_srgba(&mut c).changed() {
                                                     *rgb = [c.r(), c.g(), c.b()];
@@ -461,14 +485,14 @@ impl eframe::App for MyApp {
                                                         }
                                                     });
                                                     
-                                                    ui.horizontal(|ui| {
-                                                        ui.label("Bar Width:");
-                                                        let mut width = m.params.get("bar_width").and_then(|v| v.as_f64()).unwrap_or(0.1);
-                                                        if ui.add(egui::Slider::new(&mut width, 0.01..=0.5).text("Width")).changed() {
-                                                            m.params.insert("bar_width".into(), width.into());
-                                                            needs_save = true;
-                                                        }
-                                                    });
+                                                        ui.horizontal(|ui| {
+                                                            ui.label("Bar Width:");
+                                                            let mut width = m.params.get("bar_width").and_then(|v| v.as_f64()).unwrap_or(0.1);
+                                                            if ui.add(egui::Slider::new(&mut width, 0.01..=1.0).text("Width")).changed() {
+                                                                m.params.insert("bar_width".into(), width.into());
+                                                                needs_save = true;
+                                                            }
+                                                        });
                                                 } else {
                                                     let mut speed = m.params.get("speed").and_then(|v| v.as_f64()).unwrap_or(1.0);
                                                     if ui.add(egui::Slider::new(&mut speed, 0.1..=5.0).text("Speed")).changed() {
@@ -529,7 +553,7 @@ impl eframe::App for MyApp {
                 };
 
                 // INPUT TRANSFORMS (Keep existing input logic)
-                let mut input = ctx.input_mut(|i| i.clone());
+                let input = ctx.input(|i| i.clone());
                 
                 if response.hovered() {
                     let mut zoom_factor = 1.0;
@@ -558,33 +582,98 @@ impl eframe::App for MyApp {
                        // 1. HIT TEST RESIZE HANDLES (Priority over Move)
                        // Only check masks for resizing for now
                        for m in &self.state.masks {
-                           // Logic depends on mask type
-                           let handle_size = 8.0 / (rect.width() * self.view.scale); // visual size
+                           let handle_size = 15.0 / (rect.width() * self.view.scale);  
+                           
                            match m.mask_type.as_str() {
                                "scanner" => {
                                    let w = m.params.get("width").and_then(|v| v.as_f64()).unwrap_or(0.1) as f32;
                                    let h = m.params.get("height").and_then(|v| v.as_f64()).unwrap_or(0.1) as f32;
-                                   // Bottom-Right Corner for resize
-                                   let handle_x = m.x + w/2.0;
-                                   let handle_y = m.y + h/2.0;
-                                   let dist = ((wx - handle_x).powi(2) + (wy - handle_y).powi(2)).sqrt();
-                                   if dist < handle_size {
-                                       self.view.drag_id = Some(m.id);
-                                       self.view.drag_type = DragType::ResizeMask; 
-                                       hit = true;
+                                   let rot_deg = m.params.get("rotation").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
+                                   let rot = rot_deg.to_radians();
+                                   let cos_r = rot.cos();
+                                   let sin_r = rot.sin();
+                                   
+                                   // Transform Mouse to Local
+                                   let dx = wx - m.x;
+                                   let dy = wy - m.y;
+                                   // Rotate by -rot
+                                   let lx = dx * cos_r + dy * sin_r;
+                                   let ly = -dx * sin_r + dy * cos_r;
+                                   
+                                   let hw = w / 2.0;
+                                   let hh = h / 2.0;
+                                   
+                                   let in_y = ly >= -hh - handle_size && ly <= hh + handle_size;
+                                   let in_x = lx >= -hw - handle_size && lx <= hw + handle_size;
+                                   
+                                   let mut set_cursor = |edge: usize, normal_ang: f32| {
+                                        self.view.drag_id = Some(m.id);
+                                        self.view.drag_type = DragType::ResizeMask(edge);
+                                        hit = true;
+                                        
+                                        // Pick Cursor based on Normal Angle (screen space)
+                                        // 0 = Right (East), PI/2 = Down (South), PI = Left, 3PI/2 = Up
+                                        // Normalize ang to 0..PI
+                                        let mut a = normal_ang.rem_euclid(std::f32::consts::PI);
+                                        if a > std::f32::consts::PI { a -= std::f32::consts::PI; }
+                                        
+                                        // EastWest: 0 or PI
+                                        // NorthSouth: PI/2
+                                        // NeSw: PI/4 or 5PI/4 (Normal is 45 deg)
+                                        // NwSe: 3PI/4 (Normal is 135 deg)
+                                        
+                                        let icon = if (a - 0.0).abs() < 0.3 || (a - std::f32::consts::PI).abs() < 0.3 {
+                                             egui::CursorIcon::ResizeHorizontal
+                                        } else if (a - std::f32::consts::PI/2.0).abs() < 0.3 {
+                                             egui::CursorIcon::ResizeVertical
+                                        } else if (a - std::f32::consts::PI/4.0).abs() < 0.3 {
+                                             egui::CursorIcon::ResizeNeSw
+                                        } else {
+                                             egui::CursorIcon::ResizeNwSe
+                                        };
+                                        canvas_ui.output_mut(|o| o.cursor_icon = icon);
+                                   };
+
+                                   // Local Normals: Top (0,-1), Right (1,0), Bottom (0,1), Left (-1,0)
+                                   // Rotate Local Normal by `rot`.
+                                   // N_world_x = nx * cos(rot) - ny * sin(rot)
+                                   // N_world_y = nx * sin(rot) + ny * cos(rot)
+                                   
+                                   if in_x && (ly - (-hh)).abs() < handle_size {
+                                       // Edge 0 (Top). Local Normal (0,-1)
+                                       // Angle: rot - PI/2 ??
+                                       // nx = -sin(rot), ny = -cos(rot). Angle = atan2(-cos, -sin)
+                                       // Simple: Top edge normal is UP in local. Rotated UP.
+                                       let ang = rot - std::f32::consts::FRAC_PI_2;
+                                       set_cursor(0, ang);
+                                       break;
+                                   }
+                                   if in_y && (lx - hw).abs() < handle_size {
+                                       // Edge 1 (Right). Local Normal (1,0). Angle = rot.
+                                       set_cursor(1, rot);
+                                       break;
+                                   }
+                                   if in_x && (ly - hh).abs() < handle_size {
+                                       // Edge 2 (Bottom). Local Normal (0,1). Angle = rot + PI/2.
+                                       set_cursor(2, rot + std::f32::consts::FRAC_PI_2);
+                                       break;
+                                   }
+                                   if in_y && (lx - (-hw)).abs() < handle_size {
+                                       // Edge 3 (Left). Local Normal (-1,0). Angle = rot + PI.
+                                       set_cursor(3, rot + std::f32::consts::PI);
                                        break;
                                    }
                                },
                                "radial" => {
                                    let r = m.params.get("radius").and_then(|v| v.as_f64()).unwrap_or(0.1) as f32;
-                                   // Right edge for radius resize
-                                   let handle_x = m.x + r;
-                                   let handle_y = m.y;
-                                   let dist = ((wx - handle_x).powi(2) + (wy - handle_y).powi(2)).sqrt();
-                                    if dist < handle_size {
+                                   let dist = ((wx - m.x).powi(2) + (wy - m.y).powi(2)).sqrt();
+                                   if (dist - r).abs() < handle_size {
                                        self.view.drag_id = Some(m.id);
-                                       self.view.drag_type = DragType::ResizeMask; 
+                                       self.view.drag_type = DragType::ResizeMask(1); // Treat as "Right" for logic
                                        hit = true;
+                                       canvas_ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::ResizeNwSe); // Default for radius?
+                                       // Or calculation direction based on mouse angle?
+                                       // Just use general resize
                                        break;
                                    }
                                },
@@ -667,19 +756,77 @@ impl eframe::App for MyApp {
                                  m.x += dx;
                                  m.y += dy;
                              }
-                         } else if self.view.drag_type == DragType::ResizeMask {
+                         } else if let DragType::ResizeMask(edge_idx) = self.view.drag_type {
                               if let Some(m) = self.state.masks.iter_mut().find(|m| Some(m.id) == self.view.drag_id) {
                                   match m.mask_type.as_str() {
                                       "scanner" => {
                                           let w = m.params.get("width").and_then(|v| v.as_f64()).unwrap_or(0.1) as f32;
                                           let h = m.params.get("height").and_then(|v| v.as_f64()).unwrap_or(0.1) as f32;
-                                          // Simple resize: add dx/dy to width/height
-                                          // Limit min size
-                                          m.params.insert("width".to_string(), (w + dx * 2.0).max(0.01).into()); // *2 because centered
-                                          m.params.insert("height".to_string(), (h + dy * 2.0).max(0.01).into());
+                                          let rot_deg = m.params.get("rotation").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
+                                          let rot = rot_deg.to_radians();
+                                          let cos_r = rot.cos();
+                                          let sin_r = rot.sin();
+                                          
+                                          // Local Delta: Rotate dx, dy by -rot
+                                          let ldx = dx * cos_r + dy * sin_r;
+                                          let ldy = -dx * sin_r + dy * cos_r;
+                                          
+                                          let mut new_w = w;
+                                          let mut new_h = h;
+                                          let mut shift_lx = 0.0;
+                                          let mut shift_ly = 0.0;
+                                          
+                                          match edge_idx {
+                                              0 => { // Top (Y-)
+                                                  // Pulling Up (Negative ldy) increases Height
+                                                  new_h = (h - ldy).max(0.01);
+                                                  shift_ly = ldy / 2.0; 
+                                              },
+                                              1 => { // Right (X+)
+                                                  // Pulling Right (Positive ldx) increases Width
+                                                  new_w = (w + ldx).max(0.01);
+                                                  shift_lx = ldx / 2.0;
+                                              },
+                                              2 => { // Bottom (Y+)
+                                                  // Pulling Down (Positive ldy) increases Height
+                                                  new_h = (h + ldy).max(0.01);
+                                                  shift_ly = ldy / 2.0;
+                                              },
+                                              3 => { // Left (X-)
+                                                  // Pulling Left (Negative ldx) increases Width
+                                                  new_w = (w - ldx).max(0.01);
+                                                  shift_lx = ldx / 2.0;
+                                              },
+                                              _ => {}
+                                          }
+                                          
+                                          // Update Params
+                                          m.params.insert("width".to_string(), new_w.into());
+                                          m.params.insert("height".to_string(), new_h.into());
+                                          
+                                          // Apply Shift (Rotate back to World)
+                                          // shift_lx, shift_ly is Local shift relative to old center?
+                                          // Yes. If I move Top Edge up by 1, Height increases by 1, Center moves up by 0.5.
+                                          // My logic: New Center = Old Center + Shift.
+                                          // Rotated Shift:
+                                          let wx = shift_lx * cos_r - shift_ly * sin_r;
+                                          let wy = shift_lx * sin_r + shift_ly * cos_r;
+                                          
+                                          m.x += wx;
+                                          m.y += wy;
                                       },
                                       "radial" => {
                                           let r = m.params.get("radius").and_then(|v| v.as_f64()).unwrap_or(0.1) as f32;
+                                          // Radial uses edge 1 (Right) from hit test, but really just distance change
+                                          // Simple: Radial always expands from center? Or edge drag?
+                                          // Let's assume edge drag just changes radius. User clicks rim.
+                                          // We can project delta onto the radial vector?
+                                          // Simple approx: if edge 1 (Right), use ldx?
+                                          // Just use local delta magnitude?
+                                          // Let's just use simple R += dx (if visually dragging right).
+                                          // Or better: Project drag vector onto (Mouse - Center) vector.
+                                          // But we don't have Mouse pos here easily (response.drag_delta).
+                                          // Let's stick to Right Edge logic since we hit-tested Right Edge.
                                           m.params.insert("radius".to_string(), (r + dx).max(0.01).into());
                                       },
                                       _ => {}
@@ -801,19 +948,34 @@ impl eframe::App for MyApp {
                              let w = m.params.get("width").and_then(|v| v.as_f64()).unwrap_or(0.1) as f32;
                              let h = m.params.get("height").and_then(|v| v.as_f64()).unwrap_or(0.1) as f32;
                              let speed_param = m.params.get("speed").and_then(|v| v.as_f64()).unwrap_or(1.0) as f32;
+                             let rotation_deg = m.params.get("rotation").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
+                             let rot = rotation_deg.to_radians();
+                             let cos_r = rot.cos();
+                             let sin_r = rot.sin();
+
+                             let half_w_scr = (w * rect.width() * self.view.scale) / 2.0;
+                             let half_h_scr = (h * rect.height() * self.view.scale) / 2.0;
                              
-                             let rect_size = egui::vec2(
-                                 w * rect.width() * self.view.scale,
-                                 h * rect.height() * self.view.scale
-                             );
+                             // Helper to rotate point (local x,y) -> (screen x,y) considering center 'pos'
+                             let rotate_pt = |lx: f32, ly: f32| -> egui::Pos2 {
+                                 let rx = lx * cos_r - ly * sin_r;
+                                 let ry = lx * sin_r + ly * cos_r;
+                                 pos + egui::vec2(rx, ry)
+                             };
+
+                             // 1. Draw Rotated Box
+                             let corners = vec![
+                                 rotate_pt(-half_w_scr, -half_h_scr),
+                                 rotate_pt(half_w_scr, -half_h_scr),
+                                 rotate_pt(half_w_scr, half_h_scr),
+                                 rotate_pt(-half_w_scr, half_h_scr),
+                             ];
                              
-                             // Draw Box
-                             painter.rect(
-                                 egui::Rect::from_center_size(pos, rect_size),
-                                 2.0,
+                             painter.add(egui::Shape::convex_polygon(
+                                 corners.clone(),
                                  color,
                                  egui::Stroke::new(2.0, base_color)
-                             );
+                             ));
                              
                              // VISUALIZE SCANNER BAR
                              let t = self.engine.get_time();
@@ -850,9 +1012,7 @@ impl eframe::App for MyApp {
                                  phase.sin()
                              };
 
-                             let offset_x = (w / 2.0) * osc_val as f32;
-                             let bar_pos_world = m.x + offset_x;
-                             let bar_screen = to_screen(bar_pos_world, m.y, &self.view);
+                             let offset_x_scr = (half_w_scr) * osc_val as f32; // Half Width screen
                              
                              let bar_color = if mode == "gradient" {
                                   // Visualize Multi-Color Gradient
@@ -904,30 +1064,50 @@ impl eframe::App for MyApp {
                                   egui::Color32::WHITE
                              };
 
-                             // Bar is a vertical line inside the box
-                             painter.line_segment(
-                                 [
-                                     bar_screen - egui::vec2(0.0, rect_size.y/2.0),
-                                     bar_screen + egui::vec2(0.0, rect_size.y/2.0)
-                                 ],
-                                 egui::Stroke::new(3.0, bar_color)
-                             );
+                             let bar_width_param = m.params.get("bar_width").and_then(|v| v.as_f64()).unwrap_or(0.1) as f32;
+                             // Bar width in config is "Max Distance", so total width is 2 * bar_width
+                             // However, intensity falls off.
+                             // Visualizing: Draw the full extent (2 * bar_width).
+                             let bar_w_scr = (bar_width_param * 2.0 * rect.width() * self.view.scale); 
+                             let half_bw = bar_w_scr / 2.0;
+
+                             // Bar is a vertical strip inside the box (Rotated)
+                             // Local coords: Center X = offset_x_scr, Y = -half_h .. half_h
+                             // Bar box: X = offset_x_scr +/- half_bw
                              
-                             // Draw Resize Handle (Bottom Right)
-                             let handle_pos = to_screen(m.x + w/2.0, m.y + h/2.0, &self.view);
-                             painter.circle_filled(handle_pos, 4.0, egui::Color32::WHITE);
-                             painter.circle_stroke(handle_pos, 4.0, egui::Stroke::new(1.0, egui::Color32::BLACK));
-                         },
+                             let p1 = rotate_pt(offset_x_scr - half_bw, -half_h_scr); // Top-Left of Bar
+                             let p2 = rotate_pt(offset_x_scr + half_bw, -half_h_scr); // Top-Right
+                             let p3 = rotate_pt(offset_x_scr + half_bw, half_h_scr);  // Bottom-Right
+                             let p4 = rotate_pt(offset_x_scr - half_bw, half_h_scr);  // Bottom-Left
+                             
+                             let hard_edge = m.params.get("hard_edge").and_then(|v| v.as_bool()).unwrap_or(false);
+                             
+                             // If hard edge, solid fill. If soft, maybe use alpha?
+                             // Egui simple painter doesn't do gradient fills easily.
+                             // Let's rely on Color to show the center, and fading alpha?
+                             // Actually, user wants Hard Edge to be visible.
+                             
+                             let mut b_color = bar_color;
+                             if !hard_edge {
+                                 // Simple visualization of soft edge: use lower alpha or smaller visual width?
+                                 // Let's use lower alpha for the "faded" part?
+                                 // Just drawing the full width as solid might be misleading for Soft.
+                                 // But for Hard Edge, it MUST be solid.
+                                 b_color = egui::Color32::from_rgba_unmultiplied(b_color.r(), b_color.g(), b_color.b(), 128);
+                             }
+
+                             painter.add(egui::Shape::convex_polygon(
+                                 vec![p1, p2, p3, p4],
+                                 b_color,
+                                 egui::Stroke::NONE
+                             ));
+                             
+                          },
                          "radial" => {
                              let r = m.params.get("radius").and_then(|v| v.as_f64()).unwrap_or(0.1) as f32;
                              let radius_screen = r * rect.width() * self.view.scale; // Width as basis
                              
                              painter.circle(pos, radius_screen, color, egui::Stroke::new(2.0, stroke_color));
-                             
-                             // Draw Resize Handle (Right Edge)
-                             let handle_pos = to_screen(m.x + r, m.y, &self.view);
-                             painter.circle_filled(handle_pos, 4.0, egui::Color32::WHITE);
-                             painter.circle_stroke(handle_pos, 4.0, egui::Stroke::new(1.0, egui::Color32::BLACK));
                          },
                          _ => {}
                     }
