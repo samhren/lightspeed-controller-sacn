@@ -1,0 +1,1058 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pixel Controller</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: #1a1a1a;
+            color: #f0f0f0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 20px;
+            margin: 0;
+        }
+
+        h1 {
+            margin-bottom: 20px;
+            font-weight: 300;
+        }
+
+        .panel {
+            background: #2a2a2a;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            display: flex;
+            gap: 15px;
+            align-items: center;
+            flex-wrap: wrap;
+            justify-content: center;
+        }
+
+        .panel h3 {
+            margin: 0 10px 0 0;
+            font-size: 1em;
+            color: #aaa;
+        }
+
+        input,
+        select,
+        button {
+            padding: 8px 12px;
+            border-radius: 4px;
+            border: 1px solid #444;
+            background: #333;
+            color: white;
+            outline: none;
+        }
+
+        button {
+            cursor: pointer;
+            background: #007aff;
+            border: none;
+            font-weight: 500;
+        }
+
+        button.secondary {
+            background: #555;
+        }
+
+        button:hover {
+            background: #0066d6;
+        }
+
+        button.secondary:hover {
+            background: #666;
+        }
+
+        canvas {
+            border: 1px solid #444;
+            background: #000;
+            border-radius: 4px;
+            cursor: crosshair;
+        }
+
+        .canvas-container {
+            position: relative;
+        }
+
+        .instructions {
+            font-size: 0.8em;
+            color: #888;
+            margin-top: 10px;
+        }
+
+        .edit-form {
+            display: none;
+            flex-direction: column;
+            gap: 10px;
+            position: absolute;
+            background: rgba(40, 40, 40, 0.95);
+            padding: 15px;
+            border: 1px solid #555;
+            border-radius: 6px;
+            top: 50px;
+            left: 50px;
+            /* Dynamic */
+            padding: 15px;
+            border: 1px solid #555;
+            border-radius: 6px;
+            top: 50px;
+            left: 50px;
+            /* Dynamic */
+        }
+
+        .mode-toggle {
+            display: inline-flex;
+            gap: 10px;
+            background: #333;
+            padding: 5px 10px;
+            border-radius: 4px;
+        }
+
+        .tabs {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+
+        .tab {
+            padding: 10px 20px;
+            background: #333;
+            border-radius: 6px;
+            cursor: pointer;
+            border: 1px solid #444;
+            color: #aaa;
+        }
+
+        .tab.active {
+            background: #007aff;
+            color: white;
+            border-color: #007aff;
+        }
+    </style>
+</head>
+
+<body>
+
+    <h1>Falcon Pixel Controller</h1>
+
+    <!-- New Header -->
+    <div class="header">
+        <div class="logo">Falcon Pixel Controller</div>
+        <div id="linkStatus" style="color: #aaa; font-family: monospace; font-size: 14px; margin-right: 20px;">Link: 0 |
+        </div>
+
+        <!-- Network Configuration -->
+        <div class="panel">
+            <div class="controls">
+                <div class="network-status" id="networkStatus">Checking Network...</div>
+                <select id="networkSelect" onchange="setNetwork()">
+                    <option value="">Loading interfaces...</option>
+                </select>
+                <button onclick="setNetwork()" class="secondary">Bind Interface</button>
+            </div>
+        </div>
+
+        <!-- Navigation Tabs -->
+        <div class="tabs">
+            <div class="tab active" id="tabLayout" onclick="switchTab('global')">Layout & Global</div>
+            <div class="tab" id="tabSpatial" onclick="switchTab('spatial')">Spatial Designer</div>
+        </div>
+
+        <!-- View: Layout & Global -->
+        <div id="viewLayout" class="panel">
+            <div>
+                <label>Global Effect:</label>
+                <select id="effectSelect" onchange="setEffect(this.value)">
+                    <option value="rainbow">Unified Rainbow</option>
+                    <option value="pulse">Red Pulse</option>
+                    <option value="flash">White Flash</option>
+                </select>
+            </div>
+            <div style="width: 1px; background: #444; height: 30px; margin: 0 15px;"></div>
+            <div>
+                <input type="number" id="newUniverse" placeholder="Universe" style="width: 80px;">
+                <input type="number" id="newCount" placeholder="Count" style="width: 60px;" value="50">
+                <button onclick="addStrip()">Add Strip</button>
+            </div>
+        </div>
+
+        <!-- View: Spatial Designer -->
+        <div id="viewSpatial" class="panel" style="display:none;">
+            <h3 style="margin-right:20px;">Masks:</h3>
+            <button onclick="addMask('scanner')">+ Scanner Bar</button>
+            <button onclick="addMask('radial')">+ Radial Pulse</button>
+            <div style="width: 1px; background: #444; height: 30px; margin: 0 15px;"></div>
+            <span style="color: #888;">Drag masks on canvas to position them.</span>
+        </div>
+
+        <div class="canvas-container">
+            <canvas id="grid" width="800" height="600"></canvas>
+
+            <!-- Quick Edit Popup (Hidden by default) -->
+            <div id="editPopup" class="edit-form">
+                <strong>Edit Strip</strong>
+                <div>ID: <span id="editId"></span></div>
+                <label>Universe: <input type="number" id="editUniverse" style="width: 60px;"></label>
+                <label>Count: <input type="number" id="editCount" style="width: 60px;"></label>
+                <div>
+                    <button onclick="saveEdit()" style="width: 100%;">Save</button>
+                    <button onclick="deleteStrip()"
+                        style="width: 100%; margin-top:5px; background: #d44;">Delete</button>
+                    <button onclick="closeEdit()" class="secondary" style="width: 100%; margin-top:5px;">Cancel</button>
+                </div>
+            </div>
+            <!-- Mask Edit Popup -->
+            <div id="maskEditPopup" class="edit-form" style="display: none;">
+                <h3>Edit Mask</h3>
+                <div>ID: <span id="maskEditId"></span></div>
+
+                <label>Type: <span id="maskEditType"></span></label>
+
+                <label>Speed:</label>
+                <input type="number" id="maskEditSpeed" step="0.1" value="1.0">
+
+                <label>Width:</label>
+                <input type="number" id="maskEditWidth" step="0.05" value="0.3">
+
+                <label>Height:</label>
+                <input type="number" id="maskEditHeight" step="0.05" value="0.3">
+
+                <button class="btn" style="background: #007aff; margin-top:10px;"
+                    onclick="saveMaskParams()">Save</button>
+                <button class="btn" style="background: #ff3b30; margin-top:5px;" onclick="deleteMask()">Delete
+                    Mask</button>
+                <button class="btn" style="background: #444; margin-top:5px;" onclick="closeMaskEdit()">Cancel</button>
+            </div>
+        </div>
+
+        <div class="instructions">
+            Drag strips to reposition. Click a strip to edit.
+            <br>Strip width represents pixel count (1px per LED).
+        </div>
+
+        <script>
+            const canvas = document.getElementById('grid');
+            const ctx = canvas.getContext('2d');
+
+            let strips = []; // {id, x, y, universe, count}
+            let masks = [];  // {id, type, x, y, params}
+            let currentMode = 'global'; // 'global' or 'spatial'
+
+            // Visualization scaling
+            const STRIP_HEIGHT = 20;
+
+            // Viewport State
+            let view = {
+                scale: 1.0,
+                x: 0, // Pan Offset X
+                y: 0  // Pan Offset Y
+            };
+
+            // Interactions
+            let isDragging = false;
+            let isResizing = false;
+            let resizeIndex = -1;
+            let resizeCorner = null; // 'tl', 'tr', 'bl', 'br'
+            let dragTarget = null; // { type: 'strip'|'mask', index: int, offsetX: float, offsetY: float }
+            let isPanning = false;
+            let lastMouseX = 0;
+            let lastMouseY = 0;
+
+            // Coordinate Transforms
+            function worldToScreen(wx, wy) {
+                return {
+                    x: (wx * canvas.width * view.scale) + view.x,
+                    y: (wy * canvas.height * view.scale) + view.y
+                };
+            }
+
+            function screenToWorld(sx, sy) {
+                return {
+                    x: ((sx - view.x) / view.scale) / canvas.width,
+                    y: ((sy - view.y) / view.scale) / canvas.height
+                };
+            }
+
+            // --- Tabs / Mode Switching ---
+            function switchTab(mode) {
+                currentMode = mode;
+
+                // Update UI Tabs
+                document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+                if (mode === 'global') {
+                    document.getElementById('tabLayout').classList.add('active');
+                    document.getElementById('viewLayout').style.display = 'flex';
+                    document.getElementById('viewSpatial').style.display = 'none';
+                } else {
+                    document.getElementById('tabSpatial').classList.add('active');
+                    document.getElementById('viewLayout').style.display = 'none';
+                    document.getElementById('viewSpatial').style.display = 'flex';
+                    loadMasks(); // Refresh masks when entering view
+                }
+                fetch('/set_mode', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ mode: mode })
+                });
+                draw();
+            }
+
+            // --- Network ---
+            // (Kept same as before, simplified for brevity in this replace block if unchanged, 
+            // but since I'm replacing a huge block I need to make sure I don't lose loadInterfaces)
+
+            function loadInterfaces() {
+                fetch('/interfaces')
+                    .then(r => r.json())
+                    .then(data => {
+                        const sel = document.getElementById('networkSelect');
+                        sel.innerHTML = '';
+                        data.forEach(iface => {
+                            const opt = document.createElement('option');
+                            opt.value = iface.ip;
+                            opt.text = `${iface.name} (${iface.ip})`;
+                            sel.appendChild(opt);
+                        });
+                        // Fetch status
+                        fetch('/network_status')
+                            .then(r => r.json())
+                            .then(status => {
+                                if (status.current_ip) {
+                                    sel.value = status.current_ip;
+                                    document.getElementById('networkStatus').innerText = "Bound to " + status.current_ip;
+                                    document.getElementById('networkStatus').style.color = "#4c4";
+                                }
+                                if (status.mode) {
+                                    switchTab(status.mode);
+                                }
+                            });
+                    });
+            }
+
+            function setNetwork() {
+                const ip = document.getElementById('networkSelect').value;
+                fetch('/set_network', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ ip: ip })
+                })
+                    .then(r => {
+                        if (r.ok) {
+                            document.getElementById('networkStatus').innerText = "Bound to " + ip;
+                            document.getElementById('networkStatus').style.color = "#4c4";
+                        } else {
+                            document.getElementById('networkStatus').innerText = "Error binding";
+                            document.getElementById('networkStatus').style.color = "#c44";
+                        }
+                    });
+            }
+
+            // --- Canvas Events ---
+
+            canvas.addEventListener('contextmenu', (e) => {
+                e.preventDefault();
+                // Right click = Edit
+                const rect = canvas.getBoundingClientRect();
+                const hit = checkHit(e.clientX - rect.left, e.clientY - rect.top);
+
+                if (hit) {
+                    const x = e.clientX - rect.left;
+                    const y = e.clientY - rect.top;
+
+                    if (hit.type === 'strip') {
+                        selectStrip(hit.index, x, y);
+                    } else if (hit.type === 'mask') {
+                        selectMask(hit.index, x, y);
+                    }
+                }
+            });
+
+            canvas.addEventListener('wheel', (e) => {
+                e.preventDefault();
+                // Zoom with Ctrl or Pinch (Trackpad often sends Ctrl+Wheel)
+                // Or just allow standard wheel zoom
+
+                if (e.ctrlKey || Math.abs(e.deltaY) < 10) { // Trackpad pinch heuristic often involves small deltas or ctrl
+                    const zoomSpeed = 0.001;
+                    const zoom = Math.exp(-e.deltaY * zoomSpeed);
+
+                    // Zoom towards mouse
+                    const rect = canvas.getBoundingClientRect();
+                    const mx = e.clientX - rect.left;
+                    const my = e.clientY - rect.top;
+
+                    const wx_before = (mx - view.x) / view.scale;
+                    const wy_before = (my - view.y) / view.scale;
+
+                    view.scale *= zoom;
+                    view.scale = Math.max(0.01, Math.min(20, view.scale));
+
+                    view.x = mx - wx_before * view.scale;
+                    view.y = my - wy_before * view.scale;
+                } else {
+                    // Pan
+                    view.x -= e.deltaX;
+                    view.y -= e.deltaY;
+                }
+                // draw() handled by loop
+            }, { passive: false });
+
+            function checkHandles(x, y) {
+                if (currentMode !== 'spatial') return null;
+                const handleSize = 10; // slightly larger hit area
+
+                for (let i = 0; i < masks.length; i++) {
+                    const m = masks[i];
+                    if (m.type !== 'scanner') continue;
+
+                    const pos = worldToScreen(m.x, m.y);
+                    const mx = pos.x;
+                    const my = pos.y;
+                    const w = (m.params.width || 0.3) * canvas.width * view.scale;
+                    const h = (m.params.height || 0.3) * canvas.height * view.scale;
+
+                    // Check 4 corners
+                    // TL
+                    if (Math.abs(x - (mx - w / 2)) < handleSize && Math.abs(y - (my - h / 2)) < handleSize) return { index: i, corner: 'tl' };
+                    // TR
+                    if (Math.abs(x - (mx + w / 2)) < handleSize && Math.abs(y - (my - h / 2)) < handleSize) return { index: i, corner: 'tr' };
+                    // BL
+                    if (Math.abs(x - (mx - w / 2)) < handleSize && Math.abs(y - (my + h / 2)) < handleSize) return { index: i, corner: 'bl' };
+                    // BR
+                    if (Math.abs(x - (mx + w / 2)) < handleSize && Math.abs(y - (my + h / 2)) < handleSize) return { index: i, corner: 'br' };
+                }
+                return null;
+            }
+
+            canvas.addEventListener('mousedown', (e) => {
+                if (e.button !== 0) return; // Left click only
+                const rect = canvas.getBoundingClientRect();
+                const x = e.clientX - rect.left;
+                const y = e.clientY - rect.top;
+
+                // 1. Check Handles First
+                const handleHit = checkHandles(x, y);
+                if (handleHit) {
+                    isResizing = true;
+                    resizeIndex = handleHit.index;
+                    resizeCorner = handleHit.corner;
+                    return;
+                }
+
+                // 2. Check Objects
+                const hit = checkHit(x, y);
+                if (hit) {
+                    isDragging = true;
+                    dragTarget = hit;
+                    const pos = hit.type === 'strip' ?
+                        worldToScreen(strips[hit.index].x, strips[hit.index].y) :
+                        worldToScreen(masks[hit.index].x, masks[hit.index].y);
+
+                    dragTarget.offsetX = x - pos.x;
+                    dragTarget.offsetY = y - pos.y;
+
+                    // Select but no popup on left click
+                    if (hit.type === 'strip') {
+                        selectedIndex = hit.index;
+                        closeEdit(true);
+                    }
+                } else {
+                    // Background drag = Pan
+                    isPanning = true;
+                    lastMouseX = x;
+                    lastMouseY = y;
+                    closeEdit(false);
+                }
+                draw();
+            });
+
+            canvas.addEventListener('mousemove', (e) => {
+                const rect = canvas.getBoundingClientRect();
+                const x = e.clientX - rect.left;
+                const y = e.clientY - rect.top;
+
+                // Cursor styling
+                const handleHit = checkHandles(x, y);
+                if (handleHit || isResizing) {
+                    canvas.style.cursor = handleHit ? (
+                        (handleHit.corner == 'tl' || handleHit.corner == 'br') ? 'nwse-resize' : 'nesw-resize'
+                    ) : 'move';
+                } else {
+                    const hit = checkHit(x, y);
+                    if (hit) {
+                        canvas.style.cursor = isDragging ? 'grabbing' : 'grab';
+                    } else {
+                        canvas.style.cursor = isPanning ? 'move' : 'default';
+                    }
+                }
+
+                if (isResizing) {
+                    const m = masks[resizeIndex];
+                    const pos = worldToScreen(m.x, m.y);
+
+                    let w = Math.abs(x - pos.x) / (canvas.width * view.scale) * 2;
+                    let h = Math.abs(y - pos.y) / (canvas.height * view.scale) * 2;
+
+                    if (w < 0.05) w = 0.05;
+                    if (h < 0.05) h = 0.05;
+
+                    m.params.width = w;
+                    m.params.height = h;
+                    // No redraw loop needed as animate() handles it?
+                    // But animate() is only requesting frame. Draw might happen async.
+                    // Actually animate() runs draw().
+                    // But for responsiveness, maybe we don't need to call draw() explicitly if loop is running?
+                    // User complained about lag. Let's rely on animate() loop if possible, 
+                    // OR if 'spatial' mode is checking draw.
+                    // If we rely on animate(), we don't call draw() here.
+                    // BUT animate() only runs if currentMode == 'spatial'.
+                    // Resize is only in spatial.
+                    return;
+                }
+
+                if (isDragging && dragTarget) {
+                    canvas.style.cursor = 'grabbing';
+
+                    // Calculate New Screen Position based on Offset
+                    const newScreenX = x - dragTarget.offsetX;
+                    const newScreenY = y - dragTarget.offsetY;
+
+                    // Convert to World
+                    const newWorld = screenToWorld(newScreenX, newScreenY);
+
+                    if (dragTarget.type === 'strip') {
+                        strips[dragTarget.index].x = newWorld.x;
+                        strips[dragTarget.index].y = newWorld.y;
+                    } else if (dragTarget.type === 'mask') {
+                        masks[dragTarget.index].x = newWorld.x;
+                        masks[dragTarget.index].y = newWorld.y;
+                    }
+                    // draw() handled by loop
+                }
+
+                if (isPanning) {
+                    canvas.style.cursor = 'move';
+                    const dx = x - lastMouseX;
+                    const dy = y - lastMouseY;
+                    view.x += dx;
+                    view.y += dy;
+                    // draw() handled by loop
+                }
+
+                lastMouseX = x;
+                lastMouseY = y;
+            });
+
+            canvas.addEventListener('mouseup', () => {
+                if (isResizing) {
+                    const m = masks[resizeIndex];
+                    // Persist
+                    fetch('/update_mask', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            id: m.id,
+                            x: m.x,
+                            y: m.y,
+                            params: m.params
+                        })
+                    });
+                    isResizing = false;
+                    resizeIndex = -1;
+                }
+
+                if (isDragging && dragTarget) {
+                    // Final save position
+                    if (dragTarget.type === 'mask') {
+                        const m = masks[dragTarget.index];
+                        fetch('/update_mask', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                id: m.id,
+                                x: m.x,
+                                y: m.y,
+                                params: m.params
+                            })
+                        });
+                    } else if (dragTarget.type === 'strip') {
+                        const s = strips[dragTarget.index];
+                        fetch('/update_strip', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                // strips are POJOs here
+                                id: s.id,
+                                universe: s.universe,
+                                count: s.count,
+                                x: s.x,
+                                y: s.y,
+                                spacing: s.spacing || 0.01,
+                                rotation: s.rotation || 0.0
+                            })
+                        });
+                    }
+                }
+                isDragging = false;
+                dragTarget = null;
+                isPanning = false;
+                draw();
+            });
+
+            function checkHit(mx, my) {
+                // Convert everything to Screen Coordinates for hit test? 
+                // OR Convert mouse to World?
+                // Easier to convert Objects to Screen Space and test against Mouse Screen Space
+
+                if (currentMode === 'global') {
+                    for (let i = strips.length - 1; i >= 0; i--) {
+                        const s = strips[i];
+                        // Strip in world space
+                        const wx = s.x * canvas.width;
+                        const wy = s.y * canvas.height;
+                        const wWidth = (s.spacing || 0.01) * s.count * canvas.width;
+                        const wHeight = STRIP_HEIGHT / view.scale; // Height is constant in screen pixels typically? 
+                        // Wait, STRIP_HEIGHT=20 is constant. So in world space it varies.
+                        // Actually, let's project the Object Center to Screen Space.
+
+                        const screenPos = worldToScreen(s.x, s.y);
+                        const screenWidth = wWidth * view.scale; // Width scales
+                        const screenHeight = STRIP_HEIGHT; // Keep constant logical height or scale? 
+                        // Usually we want it to scale so we can zoom in to see details.
+                        // Let's scale height too if we are zooming.
+                        // But STRIP_HEIGHT=20 was "pixels".
+                        // Let's say STRIP_HEIGHT is world units? No it was 20px.
+                        // Let's simply test in screen space.
+
+                        // Re-calculate screen bounds of strip
+                        // Width in world = (count * spacing * Width_Canvas) / Width_Canvas = count * spacing?
+                        // s.x is 0..1. Canvas width is 800.
+                        // World logic: 
+                        // WidthW = s.count * (s.spacing * 1.0) -- Normalized width?
+                        // This is getting confusing mixing normalized 0..1 and pixels.
+
+                        // Consistency check: 
+                        // draw() uses: spacingPx = spacingRel * canvas.width * view.scale (implied)
+                        // Let's just replicate draw logic for hit test
+
+                        const spacingRel = s.spacing || 0.01;
+                        const totalLenWorld = (s.count - 1) * spacingRel; // 0..1 units
+                        // Approx width logic
+                        const totalLenScreen = totalLenWorld * canvas.width * view.scale;
+
+                        if (mx >= screenPos.x - totalLenScreen / 2 - 10 && mx <= screenPos.x + totalLenScreen / 2 + 10 &&
+                            my >= screenPos.y - 15 && my <= screenPos.y + 15) {
+                            return { type: 'strip', index: i };
+                        }
+                    }
+                } else {
+                    for (let i = masks.length - 1; i >= 0; i--) {
+                        const m = masks[i];
+                        const screenPos = worldToScreen(m.x, m.y);
+                        const size = 30; // Constant hit target size?
+
+                        if (mx >= screenPos.x - size && mx <= screenPos.x + size &&
+                            my >= screenPos.y - size && my <= screenPos.y + size) {
+                            return { type: 'mask', index: i };
+                        }
+                    }
+                }
+                return null;
+            }
+
+            function draw() {
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+                ctx.save();
+                // Apply View Transform? 
+                // Actually, since I custom draw the objects with screen coordinates in mind (pixel width etc),
+                // I should either use ctx.transform OR handle it manually.
+                // Using ctx transform is cleaner for "World" objects, but I have mixed units (pixels vs 0..1).
+                // Let's use manual Projection in loop to ensure exact control over "constant size handles" vs "scaling geometry".
+
+                // Background Grid
+                ctx.strokeStyle = '#222';
+                ctx.lineWidth = 1;
+                ctx.beginPath();
+
+                // Draw grid in Screen Space? Or transformed world grid?
+                // Transformed world grid is nicer.
+                // 0..1 world space. 10 lines.
+                for (let i = 0; i <= 10; i++) {
+                    const p = i / 10.0;
+                    const s1 = worldToScreen(p, 0);
+                    const s2 = worldToScreen(p, 1);
+                    ctx.moveTo(s1.x, s1.y);
+                    ctx.lineTo(s2.x, s2.y);
+
+                    const s3 = worldToScreen(0, p);
+                    const s4 = worldToScreen(1, p);
+                    ctx.moveTo(s3.x, s3.y);
+                    ctx.lineTo(s4.x, s4.y);
+                }
+                ctx.stroke();
+
+                // Strips
+                strips.forEach((s, idx) => {
+                    // Constants
+                    const spacingRel = s.spacing || 0.01;
+                    // Scale spacing by View Scale
+                    const spacingScreen = spacingRel * canvas.width * view.scale;
+
+                    const rot = s.rotation || 0;
+
+                    // Center in Screen Space
+                    const centerS = worldToScreen(s.x, s.y);
+                    const cx = centerS.x;
+                    const cy = centerS.y;
+
+                    const totalLenScreen = (s.count - 1) * spacingScreen;
+
+                    const sx = cx - (totalLenScreen / 2) * Math.cos(rot);
+                    const sy = cy - (totalLenScreen / 2) * Math.sin(rot);
+
+                    // Draw pixels
+                    for (let i = 0; i < s.count; i++) {
+                        const px = sx + i * spacingScreen * Math.cos(rot);
+                        const py = sy + i * spacingScreen * Math.sin(rot);
+
+                        // Scale pixel size too? Yes.
+                        let size = Math.max(2 * view.scale, spacingScreen * 0.8);
+                        // Clamping size for usability
+                        size = Math.max(1, size);
+
+                        let color = '#444';
+                        if (currentMode === 'global') {
+                            color = idx === selectedIndex ? '#ffcc00' : '#007aff';
+                        } else {
+                            color = '#333';
+                        }
+
+                        ctx.fillStyle = color;
+                        ctx.fillRect(px - size / 2, py - size / 2, size, size);
+                    }
+
+                    // Selection Box
+                    if (currentMode === 'global') {
+                        ctx.strokeStyle = idx === selectedIndex ? 'rgba(255, 204, 0, 0.5)' : 'rgba(0, 122, 255, 0.3)';
+                        ctx.lineWidth = 2;
+                        ctx.strokeRect(sx - 5, sy - 10, totalLenScreen + 10, 20); // Fixed height box for now or scale?
+                    }
+
+                    // Text
+                    if (view.scale > 0.5) { // LOD for text
+                        ctx.fillStyle = '#aaa';
+                        ctx.font = '10px Arial';
+                        ctx.textAlign = 'center';
+                        ctx.fillText(`U${s.universe}`, cx, cy - 15);
+                    }
+                });
+
+                // Masks
+                if (currentMode === 'spatial') {
+                    const now = Date.now() / 1000; // Seconds for animation sync
+                    masks.forEach((m) => {
+                        const pos = worldToScreen(m.x, m.y);
+                        const mx = pos.x;
+                        const my = pos.y;
+
+                        ctx.save();
+                        if (m.type === 'scanner') {
+                            // Params
+                            const w = (m.params.width || 0.3) * canvas.width * view.scale;
+                            const h = (m.params.height || 0.3) * canvas.height * view.scale;
+                            const speed = m.params.speed || 1.0;
+                            const thickness = (m.params.thickness || 0.05) * canvas.width * view.scale;
+
+                            // 1. Draw Bounding Box (The "Cage")
+                            ctx.strokeStyle = 'rgba(0, 255, 255, 0.5)';
+                            ctx.setLineDash([5, 5]);
+                            ctx.strokeRect(mx - w / 2, my - h / 2, w, h);
+                            ctx.setLineDash([]);
+
+                            // 2. Draw Animated Bar
+                            // Logic must match backend: offset_x = (bound_w / 2) * sin(t * speed)
+                            // Backend t is time since start. JS needs to sync or just look cool.
+                            // Ideally we sync time, but visual approximation is okay for now.
+                            // Let's use Date.now() but it might drift from backend.
+                            // For "feedback" it's fine.
+
+                            const osc = Math.sin(now * speed);
+                            const offsetX = (w / 2) * osc;
+
+                            // Draw Bar
+                            ctx.fillStyle = 'rgba(0, 255, 255, 0.8)';
+                            // Bar is full height of the box? Yes, per backend logic check.
+                            // But drawn at center mx + offsetX
+                            ctx.fillRect(mx + offsetX - thickness / 2, my - h / 2, thickness, h);
+
+                            // Handle (Center)
+                            ctx.fillStyle = '#0ff';
+                            ctx.fillRect(mx - 5, my - 5, 10, 10);
+
+                            // Resize Handles (Corners)
+                            ctx.fillStyle = '#fff';
+                            const handleSize = 8;
+                            // Top-Left
+                            ctx.fillRect(mx - w / 2 - handleSize / 2, my - h / 2 - handleSize / 2, handleSize, handleSize);
+                            // Top-Right
+                            ctx.fillRect(mx + w / 2 - handleSize / 2, my - h / 2 - handleSize / 2, handleSize, handleSize);
+                            // Bottom-Left
+                            ctx.fillRect(mx - w / 2 - handleSize / 2, my + h / 2 - handleSize / 2, handleSize, handleSize);
+                            // Bottom-Right
+                            ctx.fillRect(mx + w / 2 - handleSize / 2, my + h / 2 - handleSize / 2, handleSize, handleSize);
+
+                        } else if (m.type === 'radial') {
+                            const r = 50 * view.scale;
+                            ctx.beginPath();
+                            ctx.arc(mx, my, r, 0, 2 * Math.PI);
+                            ctx.fillStyle = 'rgba(255, 0, 255, 0.3)';
+                            ctx.fill();
+                            ctx.beginPath();
+                            ctx.arc(mx, my, 5, 0, 2 * Math.PI);
+                            ctx.fillStyle = '#fff';
+                            ctx.fill();
+                        }
+                        ctx.restore();
+                    });
+                }
+                ctx.restore();
+            }
+
+            // --- Editing ---
+            function selectStrip(index, clientX, clientY) {
+                selectedIndex = index;
+                draw(); // Highlight
+                const s = strips[index];
+                const p = document.getElementById('editPopup');
+                document.getElementById('editId').innerText = s.id;
+                document.getElementById('editUniverse').value = s.universe;
+                document.getElementById('editCount').value = s.count;
+
+                p.style.display = 'flex';
+                p.style.left = clientX + "px";
+                p.style.top = clientY + "px";
+            }
+
+            function selectMask(index, clientX, clientY) {
+                // No "visual selection" variable yet, but we open the popup
+                const m = masks[index];
+                const p = document.getElementById('maskEditPopup');
+
+                // Populate
+                p.dataset.index = index; // Store index for save/delete
+                document.getElementById('maskEditId').innerText = m.id;
+                document.getElementById('maskEditType').innerText = m.type;
+
+                // Defaults if missing (handled in backend too, but good for UI)
+                document.getElementById('maskEditSpeed').value = m.params.speed || 1.0;
+                document.getElementById('maskEditWidth').value = m.params.width || 0.3;
+                document.getElementById('maskEditHeight').value = m.params.height || 0.3;
+
+                p.style.display = 'flex';
+                p.style.display = 'flex';
+                p.style.left = clientX + "px";
+                p.style.top = clientY + "px";
+            }
+
+            function closeMaskEdit() {
+                document.getElementById('maskEditPopup').style.display = 'none';
+                draw();
+            }
+
+            function saveMaskParams() {
+                const p = document.getElementById('maskEditPopup');
+                const index = parseInt(p.dataset.index);
+                if (isNaN(index)) return;
+
+                const m = masks[index];
+                // Update local params from inputs
+                m.params.speed = parseFloat(document.getElementById('maskEditSpeed').value);
+                m.params.width = parseFloat(document.getElementById('maskEditWidth').value);
+                m.params.height = parseFloat(document.getElementById('maskEditHeight').value);
+
+                fetch('/update_mask', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        id: m.id,
+                        x: m.x,
+                        y: m.y,
+                        params: m.params
+                    })
+                });
+                closeMaskEdit();
+            }
+
+            function deleteMask() {
+                const p = document.getElementById('maskEditPopup');
+                const index = parseInt(p.dataset.index);
+                if (isNaN(index)) return;
+
+                const m = masks[index];
+                if (!confirm("Delete mask " + m.id + "?")) return;
+
+                fetch('/delete_mask', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ id: m.id })
+                })
+                    .then(r => r.json())
+                    .then(() => {
+                        closeMaskEdit();
+                        loadMasks();
+                    });
+            }
+
+            function closeEdit(keepSelection = false) {
+                document.getElementById('editPopup').style.display = 'none';
+                if (!keepSelection) selectedIndex = -1;
+                draw();
+            }
+
+
+
+            function deleteStrip() {
+                if (selectedIndex === -1) return;
+                const id = strips[selectedIndex].id;
+                fetch('/delete_strip', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ id: id })
+                })
+                    .then(r => r.json())
+                    .then(() => {
+                        strips.splice(selectedIndex, 1);
+                        closeEdit();
+                        draw();
+                    });
+            }
+
+            function loadStrips() {
+                fetch('/strips')
+                    .then(r => r.json())
+                    .then(data => {
+                        strips = data.map(s => ({
+                            id: s.id,
+                            universe: s.universe,
+                            count: s.pixel_count,
+                            x: s.x,
+                            y: s.y
+                        }));
+                        draw();
+                    });
+            }
+
+            // --- Mask API ---
+            function loadMasks() {
+                fetch('/masks')
+                    .then(r => r.json())
+                    .then(data => {
+                        masks = data;
+                        draw();
+                    });
+            }
+
+            function addMask(type) {
+                fetch('/add_mask', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ type: type })
+                })
+                    .then(r => r.json())
+                    .then(data => {
+                        loadMasks();
+                    });
+            }
+
+            function updateMask(id, x, y) {
+                fetch('/update_mask', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ id: id, x: x, y: y })
+                });
+            }
+
+            // --- API Calls ---
+
+            function addStrip() {
+                const universe = parseInt(document.getElementById('newUniverse').value);
+                const count = parseInt(document.getElementById('newCount').value);
+
+                if (!universe || !count) return alert("Please enter all fields");
+
+                fetch('/add_strip', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ universe: universe, count: count })
+                })
+                    .then(response => response.json())
+                    .then(data => {
+                        strips.push({
+                            id: data.id,
+                            universe: universe,
+                            count: count,
+                            x: 0.5,
+                            y: 0.5
+                        });
+                        loadStrips(); // Reload to get full synced state
+                    });
+            }
+
+            function updateLayout(id, x, y) {
+                fetch('/update_layout', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify([{ id: id, x: x, y: y }])
+                });
+            }
+
+            function setEffect(name) {
+                fetch('/set_effect', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ effect: name })
+                });
+            }
+
+            // Initial Load
+            loadInterfaces();
+            loadStrips();
+
+            // Continuous Animation Loop
+            function animate() {
+                // Always draw to ensure smooth panning/zooming in all modes
+                draw();
+                requestAnimationFrame(animate);
+            }
+            requestAnimationFrame(animate);
+
+            // Link Polling
+            setInterval(() => {
+                fetch('/api/bpm')
+                    .then(r => r.json())
+                    .then(d => {
+                        // Update UI
+                        const el = document.getElementById('linkStatus');
+                        if (el) {
+                            el.innerText = `${d.peers} Peers | BPM: ${d.bpm.toFixed(1)}`;
+                            el.style.color = d.peers > 0 ? '#4c4' : '#aaa';
+                        }
+                    })
+                    .catch(e => console.log("BPM Poll Error", e));
+            }, 1000);
+            // Mask loading happens when switching tab, but initial loadInterfaces handles initial tab selection
+
+            draw();
+
+        </script>
+</body>
+
+</html>
