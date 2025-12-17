@@ -1,6 +1,7 @@
 mod model;
 mod engine;
 mod audio;
+mod scanner;
 
 use eframe::egui;
 use model::{AppState, PixelStrip, Mask};
@@ -56,6 +57,12 @@ struct MyApp {
     engine: LightingEngine,
     view: ViewState,
     status: String,
+    is_first_frame: bool,
+    // Scenes UI state
+    new_scene_open: bool,
+    new_scene_name: String,
+    new_scene_kind: String, // "Masks" or "Global"
+    last_saved_json: String,
 }
 
 impl Default for MyApp {
@@ -77,11 +84,18 @@ impl Default for MyApp {
             });
         }
 
+        // Initial autosave snapshot
+        let snapshot = serde_json::to_string_pretty(&state).unwrap_or_default();
         Self {
             state,
             engine: LightingEngine::new(),
             view: ViewState::default(),
             status: "Ready".to_owned(),
+            is_first_frame: true,
+            new_scene_open: false,
+            new_scene_name: "New Scene".into(),
+            new_scene_kind: "Masks".into(),
+            last_saved_json: snapshot,
         }
     }
 }
@@ -169,6 +183,8 @@ impl eframe::App for MyApp {
                         
                         ui.separator();
 
+                        // Scenes UI will be shown after Strips to keep Strips on top
+
                         // STRIPS
                         ui.horizontal(|ui| {
                             ui.heading("Strips");
@@ -225,54 +241,161 @@ impl eframe::App for MyApp {
                         }
 
                         ui.separator();
-
-                        // MASKS
+                        // STRIPS are shown above; now show Scenes with embedded Masks editors
+                        ui.heading("Scenes");
                         ui.horizontal(|ui| {
-                            ui.heading("Masks");
-                            egui::ComboBox::from_id_source("add_mask")
-                                .selected_text("Add Mask...")
-                                .show_ui(ui, |ui| {
-                                    if ui.selectable_label(false, "Scanner").clicked() {
-                                        let mut m = Mask {
-                                            id: rand::random(),
-                                            mask_type: "scanner".into(),
-                                            x: 0.5, y: 0.5,
-                                            params: std::collections::HashMap::new(),
-                                        };
-                                        // Default params
-                                        m.params.insert("width".into(), 0.3.into());
-                                        m.params.insert("height".into(), 0.3.into());
-                                        m.params.insert("speed".into(), 1.0.into());
-                                        m.params.insert("color".into(), serde_json::json!([0, 255, 255]));
-                                        
-                                        self.state.masks.push(m);
-                                        self.save_state();
-                                    }
-                                    if ui.selectable_label(false, "Radial").clicked() {
-                                        let mut m = Mask {
-                                            id: rand::random(),
-                                            mask_type: "radial".into(),
-                                            x: 0.5, y: 0.5,
-                                            params: std::collections::HashMap::new(),
-                                        };
-                                        m.params.insert("radius".into(), 0.2.into());
-                                        m.params.insert("color".into(), serde_json::json!([255, 0, 0]));
-                                        self.state.masks.push(m);
-                                        self.save_state();
-                                    }
-                                });
+                            if ui.button("➕ Add Scene").clicked() {
+                                self.new_scene_open = true;
+                                self.new_scene_name = format!("Scene {}", self.state.scenes.len() + 1);
+                                self.new_scene_kind = "Masks".into();
+                            }
+                            if !self.state.scenes.is_empty() {
+                                if ui.button("Select None").clicked() { self.state.selected_scene_id = None; }
+                            }
                         });
+                        if self.new_scene_open {
+                            ui.group(|ui| {
+                                ui.horizontal(|ui| {
+                                    ui.label("Name:");
+                                    ui.text_edit_singleline(&mut self.new_scene_name);
+                                });
+                                ui.horizontal(|ui| {
+                                    ui.selectable_value(&mut self.new_scene_kind, "Masks".into(), "Masks");
+                                    ui.selectable_value(&mut self.new_scene_kind, "Global".into(), "Global effect");
+                                });
+                                ui.horizontal(|ui| {
+                                    if ui.button("Create").clicked() {
+                                        let id = rand::random();
+                                        let scene = if self.new_scene_kind == "Masks" {
+                                            model::Scene { id, name: self.new_scene_name.clone(), kind: "Masks".into(), masks: vec![], global: None }
+                                        } else {
+                                            let mut ge = model::GlobalEffect::default();
+                                            ge.params.insert("speed".into(), 0.2.into());
+                                            model::Scene { id, name: self.new_scene_name.clone(), kind: "Global".into(), masks: vec![], global: Some(ge) }
+                                        };
+                                        self.state.scenes.push(scene);
+                                        self.state.selected_scene_id = Some(id);
+                                        self.new_scene_open = false;
+                                    }
+                                    if ui.button("Cancel").clicked() { self.new_scene_open = false; }
+                                });
+                            });
+                        }
 
-                        let mut delete_mask_idx = None;
-                        let mut needs_save = false;
-                        for (idx, m) in self.state.masks.iter_mut().enumerate() {
-                            ui.push_id(m.id, |ui| {
-                                ui.collapsing(format!("{} Mask::{}", m.mask_type, m.id), |ui| {
+                        // Scenes list with per-scene editors
+                        let mut delete_scene_idx: Option<usize> = None;
+                        for (si, scene) in self.state.scenes.iter_mut().enumerate() {
+                            ui.push_id(scene.id, |ui| {
+                                ui.separator();
+                                let selected = self.state.selected_scene_id == Some(scene.id);
+                                ui.horizontal(|ui| {
+                                    if ui.selectable_label(selected, &scene.name).clicked() { self.state.selected_scene_id = Some(scene.id); }
+                                    ui.text_edit_singleline(&mut scene.name);
+                                    if ui.button("🗑").clicked() { delete_scene_idx = Some(si); }
+                                });
+                                ui.horizontal(|ui| {
+                                    ui.label("Type:");
+                                    egui::ComboBox::from_id_source(format!("scene_kind_{}", scene.id))
+                                        .selected_text(scene.kind.clone())
+                                        .show_ui(ui, |ui| {
+                                            if ui.selectable_label(scene.kind == "Masks", "Masks").clicked() { scene.kind = "Masks".into(); }
+                                            if ui.selectable_label(scene.kind == "Global", "Global").clicked() { scene.kind = "Global".into(); }
+                                        });
+                                });
+                                if scene.kind == "Global" {
+                                    if scene.global.is_none() { scene.global = Some(model::GlobalEffect::default()); }
+                                    if let Some(ge) = scene.global.as_mut() {
+                                        ui.horizontal(|ui| {
+                                            ui.label("Effect:");
+                                            egui::ComboBox::from_id_source(format!("ge_kind_{}", scene.id))
+                                                .selected_text(ge.kind.clone())
+                                                .show_ui(ui, |ui| {
+                                                    ui.selectable_value(&mut ge.kind, "Rainbow".into(), "Rainbow");
+                                                    ui.selectable_value(&mut ge.kind, "Solid".into(), "Solid");
+                                                    ui.selectable_value(&mut ge.kind, "Flash".into(), "Flash");
+                                                });
+                                        });
+                                        if ge.kind == "Solid" {
+                                            let mut color = ge.params.get("color").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or([255u8,255,255]);
+                                            if color_picker(ui, &mut color) {
+                                                ge.params.insert("color".into(), serde_json::json!([color[0], color[1], color[2]]));
+                                            }
+                                        } else if ge.kind == "Flash" {
+                                            // Flash UI
+                                            // Color
+                                            ui.horizontal(|ui| {
+                                                ui.label("Color:");
+                                                 let mut color = ge.params.get("color").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or([255u8,255,255]);
+                                                if color_picker(ui, &mut color) {
+                                                    ge.params.insert("color".into(), serde_json::json!([color[0], color[1], color[2]]));
+                                                }
+                                            });
+                                            // Rate
+                                            ui.horizontal(|ui| {
+                                                ui.label("Rate:");
+                                                let mut rate = ge.params.get("rate").and_then(|v| v.as_str()).unwrap_or("1 Bar").to_string();
+                                                egui::ComboBox::from_id_source(format!("flash_rate_{}", scene.id))
+                                                    .selected_text(rate.clone())
+                                                    .show_ui(ui, |ui| {
+                                                        ui.selectable_value(&mut rate, "4 Bar".into(), "4 Bar");
+                                                        ui.selectable_value(&mut rate, "1 Bar".into(), "1 Bar");
+                                                        ui.selectable_value(&mut rate, "1/2".into(), "1/2");
+                                                        ui.selectable_value(&mut rate, "1/4".into(), "1/4");
+                                                        ui.selectable_value(&mut rate, "1/8".into(), "1/8");
+                                                    });
+                                                if rate != ge.params.get("rate").and_then(|v| v.as_str()).unwrap_or("1 Bar") {
+                                                    ge.params.insert("rate".into(), serde_json::json!(rate));
+                                                }
+                                            });
+                                            // Decay
+                                            let mut decay = ge.params.get("decay").and_then(|v| v.as_f64()).unwrap_or(5.0);
+                                            if ui.add(egui::Slider::new(&mut decay, 1.0..=20.0).text("Decay (Sharpness)")).changed() {
+                                                ge.params.insert("decay".into(), decay.into());
+                                            }
+                                        } else {
+                                            let mut speed = ge.params.get("speed").and_then(|v| v.as_f64()).unwrap_or(0.2);
+                                            if ui.add(egui::Slider::new(&mut speed, 0.05..=2.0).text("Speed")).changed() {
+                                                ge.params.insert("speed".into(), speed.into());
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    // Embedded Masks editor for this scene
                                     ui.horizontal(|ui| {
-                                        ui.label("Pos:");
-                                        ui.add(egui::Slider::new(&mut m.x, 0.0..=1.0).text("X"));
-                                        ui.add(egui::Slider::new(&mut m.y, 0.0..=1.0).text("Y"));
+                                        ui.label("Masks:");
+                                        egui::ComboBox::from_id_source(format!("add_mask_{}", scene.id))
+                                            .selected_text("Add Mask...")
+                                            .show_ui(ui, |ui| {
+                                                if ui.selectable_label(false, "Scanner").clicked() {
+                                                    let mut m = Mask { id: rand::random(), mask_type: "scanner".into(), x: 0.5, y: 0.5, params: std::collections::HashMap::new() };
+                                                    m.params.insert("width".into(), 0.3.into());
+                                                    m.params.insert("height".into(), 0.3.into());
+                                                    m.params.insert("speed".into(), 1.0.into());
+                                                    m.params.insert("color".into(), serde_json::json!([0, 255, 255]));
+                                                    scene.masks.push(m);
+                                                }
+                                                if ui.selectable_label(false, "Radial").clicked() {
+                                                    let mut m = Mask { id: rand::random(), mask_type: "radial".into(), x: 0.5, y: 0.5, params: std::collections::HashMap::new() };
+                                                    m.params.insert("radius".into(), 0.2.into());
+                                                    m.params.insert("color".into(), serde_json::json!([255, 0, 0]));
+                                                    scene.masks.push(m);
+                                                }
+                                            });
                                     });
+
+                                    let mut delete_mask_idx = None;
+                                    let mut needs_save = false;
+                                    for (idx, m) in scene.masks.iter_mut().enumerate() {
+                                        ui.push_id(m.id, |ui| {
+                                            ui.collapsing(format!("{} Mask::{}", m.mask_type, m.id), |ui| {
+                                                ui.horizontal(|ui| {
+                                                    ui.label("Pos:");
+                                                    ui.add(egui::Slider::new(&mut m.x, 0.0..=1.0).text("X"));
+                                                    ui.add(egui::Slider::new(&mut m.y, 0.0..=1.0).text("Y"));
+                                                    if ui.button("🗑").clicked() {
+                                                        delete_mask_idx = Some(idx);
+                                                    }
+                                                });
                                     
                                     // DYNAMIC PARAMS
                                     if m.mask_type == "scanner" {
@@ -501,29 +624,18 @@ impl eframe::App for MyApp {
                                                     }
                                                 }
                                             });
-                                        } else {
-                                            // Radial just has Speed
-                                            let mut speed = m.params.get("speed").and_then(|v| v.as_f64()).unwrap_or(1.0);
-                                            if ui.add(egui::Slider::new(&mut speed, 0.1..=5.0).text("Speed")).changed() {
-                                                m.params.insert("speed".into(), speed.into());
-                                                needs_save = true;
-                                            }
                                         }
-                                    });
-                                    ui.horizontal(|ui| {
-                                         if ui.button("🗑 Delete").clicked() {
-                                             delete_mask_idx = Some(idx);
-                                         }
+                                        });
+                                    // Close collapsing and push_id blocks, then the for-loop
                                     });
                                 });
+                            }
+                            if let Some(idx) = delete_mask_idx { scene.masks.remove(idx); }
+                            if needs_save { /* autosave will handle */ }
+                        }
                             });
                         }
-                        if let Some(idx) = delete_mask_idx {
-                            self.state.masks.remove(idx);
-                            self.save_state();
-                        } else if needs_save {
-                            self.save_state();
-                        }
+                        if let Some(i) = delete_scene_idx { self.state.scenes.remove(i); }
                     });
                 });
 
@@ -535,6 +647,70 @@ impl eframe::App for MyApp {
                 );
                 
                 let rect = response.rect;
+                
+                // AUTO-FIT ON LOAD
+                if self.is_first_frame {
+                    self.is_first_frame = false;
+                    
+                    let mut min_x: f32 = 1.0;
+                    let mut min_y: f32 = 1.0;
+                    let mut max_x: f32 = 0.0;
+                    let mut max_y: f32 = 0.0;
+                    let mut found = false;
+                    
+                    for s in &self.state.strips {
+                        // Start point
+                        min_x = min_x.min(s.x);
+                        min_y = min_y.min(s.y);
+                        max_x = max_x.max(s.x);
+                        max_y = max_y.max(s.y);
+
+                        // End point
+                        if s.pixel_count > 1 {
+                            let len = (s.pixel_count - 1) as f32 * s.spacing;
+                            let tail_x = s.x + len * s.rotation.cos();
+                            let tail_y = s.y + len * s.rotation.sin();
+                            min_x = min_x.min(tail_x);
+                            min_y = min_y.min(tail_y);
+                            max_x = max_x.max(tail_x);
+                            max_y = max_y.max(tail_y);
+                        }
+                        found = true;
+                    }
+
+
+                    
+                    if found {
+                        // Pad slightly
+                        min_x -= 0.1;
+                        min_y -= 0.1;
+                        max_x += 0.1;
+                        max_y += 0.1;
+                        
+                        let w = max_x - min_x;
+                        let h = max_y - min_y;
+                        
+                        // Fit w/h into 1.0/1.0 (since normalized coords 0..1 are standard)
+                        // Scale = Pixels / NormUnit
+                        // Available: rect.width(), rect.height()
+                        
+                        let scale_x = 1.0 / w;
+                        let scale_y = 1.0 / h;
+                        let fit_scale = scale_x.min(scale_y) * 0.9; 
+                        
+                        self.view.scale = fit_scale.clamp(0.1, 100.0);
+                        
+                        // Center Logic
+                        let cx = (min_x + max_x) / 2.0;
+                        let cy = (min_y + max_y) / 2.0;
+
+                        let w_px = rect.width();
+                        let h_px = rect.height();
+                        
+                        self.view.offset.x = -(cx - 0.5) * w_px * self.view.scale;
+                        self.view.offset.y = -(cy - 0.5) * h_px * self.view.scale;
+                    }
+                }
                 
                 // HELPER CLOSURES (Moved up for scope visibility)
                 let to_screen = |x: f32, y: f32, view: &ViewState| -> egui::Pos2 {
@@ -554,6 +730,12 @@ impl eframe::App for MyApp {
 
                 // INPUT TRANSFORMS (Keep existing input logic)
                 let input = ctx.input(|i| i.clone());
+                // Determine which masks are active for viewing/editing on canvas
+                let active_masks: Vec<model::Mask> = if let Some(sel) = self.state.selected_scene_id {
+                    if let Some(scene) = self.state.scenes.iter().find(|s| s.id == sel) {
+                        if scene.kind == "Masks" { scene.masks.clone() } else { self.state.masks.clone() }
+                    } else { self.state.masks.clone() }
+                } else { self.state.masks.clone() };
                 
                 if response.hovered() {
                     let mut zoom_factor = 1.0;
@@ -571,18 +753,12 @@ impl eframe::App for MyApp {
                              self.view.offset.y = mouse_pos.y - rect.center().y - (wy - 0.5) * rect.height() * self.view.scale;
                         }
                     }
-                }
 
-                // DRAG LOGIC
-                if response.clicked() || response.drag_started() {
-                   if let Some(pos) = response.interact_pointer_pos() {
-                       let (wx, wy) = from_screen(pos, &self.view);
-                       let mut hit = false;
-                       
-                       // 1. HIT TEST RESIZE HANDLES (Priority over Move)
-                       // Only check masks for resizing for now
-                       for m in &self.state.masks {
-                           let handle_size = 15.0 / (rect.width() * self.view.scale);  
+                    // HOVER CURSOR LOGIC
+                    if let Some(pos) = response.hover_pos() {
+                       // Use Screen Pixels directly!
+                       for m in &active_masks {
+                           let handle_size = 15.0; // Pixels
                            
                            match m.mask_type.as_str() {
                                "scanner" => {
@@ -593,35 +769,27 @@ impl eframe::App for MyApp {
                                    let cos_r = rot.cos();
                                    let sin_r = rot.sin();
                                    
-                                   // Transform Mouse to Local
-                                   let dx = wx - m.x;
-                                   let dy = wy - m.y;
-                                   // Rotate by -rot
-                                   let lx = dx * cos_r + dy * sin_r;
-                                   let ly = -dx * sin_r + dy * cos_r;
+                                   // Center in Screen Matrix
+                                   let center_scr = to_screen(m.x, m.y, &self.view);
+                                   let dx_scr = pos.x - center_scr.x;
+                                   let dy_scr = pos.y - center_scr.y;
                                    
-                                   let hw = w / 2.0;
-                                   let hh = h / 2.0;
+                                   // Rotate into Local Space (Screen Pixels)
+                                   let lx_scr = dx_scr * cos_r + dy_scr * sin_r;
+                                   let ly_scr = -dx_scr * sin_r + dy_scr * cos_r;
                                    
-                                   let in_y = ly >= -hh - handle_size && ly <= hh + handle_size;
-                                   let in_x = lx >= -hw - handle_size && lx <= hw + handle_size;
-                                   
-                                   let mut set_cursor = |edge: usize, normal_ang: f32| {
-                                        self.view.drag_id = Some(m.id);
-                                        self.view.drag_type = DragType::ResizeMask(edge);
-                                        hit = true;
-                                        
-                                        // Pick Cursor based on Normal Angle (screen space)
-                                        // 0 = Right (East), PI/2 = Down (South), PI = Left, 3PI/2 = Up
-                                        // Normalize ang to 0..PI
+                                   // Dimensions in Screen Pixels
+                                   let w_scr = w * rect.width() * self.view.scale;
+                                   let h_scr = h * rect.height() * self.view.scale;
+                                   let hw_scr = w_scr / 2.0;
+                                   let hh_scr = h_scr / 2.0;
+
+                                   let in_y = ly_scr >= -hh_scr - handle_size && ly_scr <= hh_scr + handle_size;
+                                   let in_x = lx_scr >= -hw_scr - handle_size && lx_scr <= hw_scr + handle_size;
+
+                                   let set_icon = |normal_ang: f32| {
                                         let mut a = normal_ang.rem_euclid(std::f32::consts::PI);
                                         if a > std::f32::consts::PI { a -= std::f32::consts::PI; }
-                                        
-                                        // EastWest: 0 or PI
-                                        // NorthSouth: PI/2
-                                        // NeSw: PI/4 or 5PI/4 (Normal is 45 deg)
-                                        // NwSe: 3PI/4 (Normal is 135 deg)
-                                        
                                         let icon = if (a - 0.0).abs() < 0.3 || (a - std::f32::consts::PI).abs() < 0.3 {
                                              egui::CursorIcon::ResizeHorizontal
                                         } else if (a - std::f32::consts::PI/2.0).abs() < 0.3 {
@@ -634,46 +802,131 @@ impl eframe::App for MyApp {
                                         canvas_ui.output_mut(|o| o.cursor_icon = icon);
                                    };
 
-                                   // Local Normals: Top (0,-1), Right (1,0), Bottom (0,1), Left (-1,0)
-                                   // Rotate Local Normal by `rot`.
-                                   // N_world_x = nx * cos(rot) - ny * sin(rot)
-                                   // N_world_y = nx * sin(rot) + ny * cos(rot)
-                                   
-                                   if in_x && (ly - (-hh)).abs() < handle_size {
-                                       // Edge 0 (Top). Local Normal (0,-1)
-                                       // Angle: rot - PI/2 ??
-                                       // nx = -sin(rot), ny = -cos(rot). Angle = atan2(-cos, -sin)
-                                       // Simple: Top edge normal is UP in local. Rotated UP.
-                                       let ang = rot - std::f32::consts::FRAC_PI_2;
-                                       set_cursor(0, ang);
+                                   if in_x && (ly_scr - (-hh_scr)).abs() < handle_size {
+                                       set_icon(rot - std::f32::consts::FRAC_PI_2);
                                        break;
                                    }
-                                   if in_y && (lx - hw).abs() < handle_size {
-                                       // Edge 1 (Right). Local Normal (1,0). Angle = rot.
+                                   if in_y && (lx_scr - hw_scr).abs() < handle_size {
+                                       set_icon(rot);
+                                       break;
+                                   }
+                                   if in_x && (ly_scr - hh_scr).abs() < handle_size {
+                                       set_icon(rot + std::f32::consts::FRAC_PI_2);
+                                       break;
+                                   }
+                                   if in_y && (lx_scr - (-hw_scr)).abs() < handle_size {
+                                       set_icon(rot + std::f32::consts::PI);
+                                       break;
+                                   }
+                               },
+                               "radial" => {
+                                   let r = m.params.get("radius").and_then(|v| v.as_f64()).unwrap_or(0.1) as f32;
+                                   let center_scr = to_screen(m.x, m.y, &self.view);
+                                   let dx_scr = pos.x - center_scr.x;
+                                   let dy_scr = pos.y - center_scr.y;
+                                   // Note: Radius param is normalized to Width?
+                                   // Logic in draw: let radius_screen = r * rect.width() * self.view.scale;
+                                   let radius_scr = r * rect.width() * self.view.scale;
+                                   
+                                   let dist_scr = (dx_scr.powi(2) + dy_scr.powi(2)).sqrt();
+                                   
+                                   if (dist_scr - radius_scr).abs() < handle_size {
+                                       canvas_ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::ResizeNwSe);
+                                       break;
+                                   }
+                               },
+                               _ => {}
+                           }
+                       }
+                    }
+                }
+
+                if response.clicked() || response.drag_started() {
+                   if let Some(pos) = response.interact_pointer_pos() {
+                       let (wx, wy) = from_screen(pos, &self.view);
+                       let mut hit = false;
+                       
+                       // 1. HIT TEST RESIZE HANDLES (Priority over Move)
+                       // Only check masks for resizing for now
+                       for m in &active_masks {
+                           let handle_size = 15.0; // Pixels
+                           
+                           match m.mask_type.as_str() {
+                               "scanner" => {
+                                   let w = m.params.get("width").and_then(|v| v.as_f64()).unwrap_or(0.1) as f32;
+                                   let h = m.params.get("height").and_then(|v| v.as_f64()).unwrap_or(0.1) as f32;
+                                   let rot_deg = m.params.get("rotation").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
+                                   let rot = rot_deg.to_radians();
+                                   let cos_r = rot.cos();
+                                   let sin_r = rot.sin();
+                                   
+                                   let center_scr = to_screen(m.x, m.y, &self.view);
+                                   let dx_scr = pos.x - center_scr.x;
+                                   let dy_scr = pos.y - center_scr.y;
+                                   
+                                   let lx_scr = dx_scr * cos_r + dy_scr * sin_r;
+                                   let ly_scr = -dx_scr * sin_r + dy_scr * cos_r;
+                                   
+                                   let w_scr = w * rect.width() * self.view.scale;
+                                   let h_scr = h * rect.height() * self.view.scale;
+                                   let hw_scr = w_scr / 2.0;
+                                   let hh_scr = h_scr / 2.0;
+                                   
+                                   let in_y = ly_scr >= -hh_scr - handle_size && ly_scr <= hh_scr + handle_size;
+                                   let in_x = lx_scr >= -hw_scr - handle_size && lx_scr <= hw_scr + handle_size;
+                                   
+                                   
+                                   let mut set_cursor = |edge: usize, normal_ang: f32| {
+                                        self.view.drag_id = Some(m.id);
+                                        self.view.drag_type = DragType::ResizeMask(edge);
+                                        hit = true;
+                                        
+                                        // Pick Cursor based on Normal Angle (screen space)
+                                        let mut a = normal_ang.rem_euclid(std::f32::consts::PI);
+                                        if a > std::f32::consts::PI { a -= std::f32::consts::PI; }
+                                        let icon = if (a - 0.0).abs() < 0.3 || (a - std::f32::consts::PI).abs() < 0.3 {
+                                             egui::CursorIcon::ResizeHorizontal
+                                        } else if (a - std::f32::consts::PI/2.0).abs() < 0.3 {
+                                             egui::CursorIcon::ResizeVertical
+                                        } else if (a - std::f32::consts::PI/4.0).abs() < 0.3 {
+                                             egui::CursorIcon::ResizeNeSw
+                                        } else {
+                                             egui::CursorIcon::ResizeNwSe
+                                        };
+                                        canvas_ui.output_mut(|o| o.cursor_icon = icon);
+                                   };
+ 
+                                   if in_x && (ly_scr - (-hh_scr)).abs() < handle_size {
+                                       set_cursor(0, rot - std::f32::consts::FRAC_PI_2);
+                                       break;
+                                   }
+                                   if in_y && (lx_scr - hw_scr).abs() < handle_size {
                                        set_cursor(1, rot);
                                        break;
                                    }
-                                   if in_x && (ly - hh).abs() < handle_size {
-                                       // Edge 2 (Bottom). Local Normal (0,1). Angle = rot + PI/2.
+                                   if in_x && (ly_scr - hh_scr).abs() < handle_size {
                                        set_cursor(2, rot + std::f32::consts::FRAC_PI_2);
                                        break;
                                    }
-                                   if in_y && (lx - (-hw)).abs() < handle_size {
-                                       // Edge 3 (Left). Local Normal (-1,0). Angle = rot + PI.
+                                   if in_y && (lx_scr - (-hw_scr)).abs() < handle_size {
                                        set_cursor(3, rot + std::f32::consts::PI);
                                        break;
                                    }
                                },
                                "radial" => {
                                    let r = m.params.get("radius").and_then(|v| v.as_f64()).unwrap_or(0.1) as f32;
-                                   let dist = ((wx - m.x).powi(2) + (wy - m.y).powi(2)).sqrt();
-                                   if (dist - r).abs() < handle_size {
+                                   let center_scr = to_screen(m.x, m.y, &self.view);
+                                   let dx_scr = pos.x - center_scr.x;
+                                   let dy_scr = pos.y - center_scr.y;
+                                   let radius_scr = r * rect.width() * self.view.scale;
+                                   
+                                   let dist_scr = (dx_scr.powi(2) + dy_scr.powi(2)).sqrt();
+                                   
+                                   if (dist_scr - radius_scr).abs() < handle_size {
                                        self.view.drag_id = Some(m.id);
                                        self.view.drag_type = DragType::ResizeMask(1); // Treat as "Right" for logic
                                        hit = true;
-                                       canvas_ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::ResizeNwSe); // Default for radius?
-                                       // Or calculation direction based on mouse angle?
-                                       // Just use general resize
+                                       canvas_ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::ResizeNwSe); 
                                        break;
                                    }
                                },
@@ -681,23 +934,31 @@ impl eframe::App for MyApp {
                            }
                        }
 
-                       // 2. HIT TEST MOVE (Masks) - Improved to click anywhere
+
+                       // 2. HIT TEST MOVE (Masks) - With proper rotation support
                        if !hit {
-                           for m in &self.state.masks {
+                           for m in &active_masks {
                                match m.mask_type.as_str() {
                                    "scanner" => {
                                        let w = m.params.get("width").and_then(|v| v.as_f64()).unwrap_or(0.1) as f32;
                                        let h = m.params.get("height").and_then(|v| v.as_f64()).unwrap_or(0.1) as f32;
-                                       
-                                       // Check if point is inside rotated rect? No rotation on masks yet.
-                                       // AABB check
+                                       let rot_deg = m.params.get("rotation").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
+                                       let rot = rot_deg.to_radians();
+                                       let cos_r = rot.cos();
+                                       let sin_r = rot.sin();
+
+                                       // Transform click point to mask local space (same as scanner collision)
+                                       let dx = wx - m.x;
+                                       let dy = wy - m.y;
+                                       let local_x = dx * cos_r + dy * sin_r;
+                                       let local_y = -dx * sin_r + dy * cos_r;
+
                                        let half_w = w / 2.0;
-                                       let half_h = h / 2.0; // In normalized 'world' coords
-                                       
-                                       // Simple Screen Space check
-                                       // But wait, our 'hit' check uses 'wx, wy' which are normalized world coords.
-                                       if wx >= m.x - half_w && wx <= m.x + half_w && 
-                                          wy >= m.y - half_h && wy <= m.y + half_h {
+                                       let half_h = h / 2.0;
+
+                                       // Check if click is inside rotated rectangle
+                                       if local_x >= -half_w && local_x <= half_w &&
+                                          local_y >= -half_h && local_y <= half_h {
                                            self.view.drag_id = Some(m.id);
                                            self.view.drag_type = DragType::Mask;
                                            hit = true;
@@ -742,99 +1003,170 @@ impl eframe::App for MyApp {
                 
                 if response.dragged() {
                     let delta = response.drag_delta(); // screen pixels
-                    let dx = delta.x / (rect.width() * self.view.scale);
-                    let dy = delta.y / (rect.height() * self.view.scale);
 
                     if self.view.drag_id.is_some() {
                          if self.view.drag_type == DragType::Strip {
+                             // Keep Strip logic simple (normalized)
+                             // Convert delta to normalized
+                             let dx = delta.x / (rect.width() * self.view.scale);
+                             let dy = delta.y / (rect.height() * self.view.scale);
                              if let Some(s) = self.state.strips.iter_mut().find(|s| Some(s.id) == self.view.drag_id) {
-                                 s.x += dx;
-                                 s.y += dy;
+                                  s.x += dx;
+                                  s.y += dy;
                              }
                          } else if self.view.drag_type == DragType::Mask {
-                             if let Some(m) = self.state.masks.iter_mut().find(|m| Some(m.id) == self.view.drag_id) {
-                                 m.x += dx;
-                                 m.y += dy;
+                             // Keep Mask parameter move simple (normalized)
+                             let dx = delta.x / (rect.width() * self.view.scale);
+                             let dy = delta.y / (rect.height() * self.view.scale);
+                             // Move mask in selected scene if active
+                             if let Some(sel) = self.state.selected_scene_id {
+                                 if let Some(scene_index) = self.state.scenes.iter().position(|s| s.id == sel && s.kind == "Masks") {
+                                     if let Some(m) = self.state.scenes[scene_index].masks.iter_mut().find(|m| Some(m.id) == self.view.drag_id) {
+                                         m.x += dx; m.y += dy;
+                                     }
+                                 } else if let Some(m) = self.state.masks.iter_mut().find(|m| Some(m.id) == self.view.drag_id) {
+                                     m.x += dx; m.y += dy;
+                                 }
+                             } else if let Some(m) = self.state.masks.iter_mut().find(|m| Some(m.id) == self.view.drag_id) {
+                                 m.x += dx; m.y += dy;
                              }
                          } else if let DragType::ResizeMask(edge_idx) = self.view.drag_type {
-                              if let Some(m) = self.state.masks.iter_mut().find(|m| Some(m.id) == self.view.drag_id) {
-                                  match m.mask_type.as_str() {
-                                      "scanner" => {
-                                          let w = m.params.get("width").and_then(|v| v.as_f64()).unwrap_or(0.1) as f32;
-                                          let h = m.params.get("height").and_then(|v| v.as_f64()).unwrap_or(0.1) as f32;
-                                          let rot_deg = m.params.get("rotation").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
-                                          let rot = rot_deg.to_radians();
-                                          let cos_r = rot.cos();
-                                          let sin_r = rot.sin();
-                                          
-                                          // Local Delta: Rotate dx, dy by -rot
-                                          let ldx = dx * cos_r + dy * sin_r;
-                                          let ldy = -dx * sin_r + dy * cos_r;
-                                          
-                                          let mut new_w = w;
-                                          let mut new_h = h;
-                                          let mut shift_lx = 0.0;
-                                          let mut shift_ly = 0.0;
-                                          
-                                          match edge_idx {
-                                              0 => { // Top (Y-)
-                                                  // Pulling Up (Negative ldy) increases Height
-                                                  new_h = (h - ldy).max(0.01);
-                                                  shift_ly = ldy / 2.0; 
+                              // Fetch target mask mutably depending on scene selection
+                              // We'll duplicate the resize logic for whichever collection contains the mask
+                              // Scene masks first
+                              if let Some(sel) = self.state.selected_scene_id {
+                                  if let Some(scene_index) = self.state.scenes.iter().position(|s| s.id == sel && s.kind == "Masks") {
+                                      if let Some(m) = self.state.scenes[scene_index].masks.iter_mut().find(|m| Some(m.id) == self.view.drag_id) {
+                                          match m.mask_type.as_str() {
+                                              "scanner" => {
+                                                  let w = m.params.get("width").and_then(|v| v.as_f64()).unwrap_or(0.1) as f32;
+                                                  let h = m.params.get("height").and_then(|v| v.as_f64()).unwrap_or(0.1) as f32;
+                                                  let rot_deg = m.params.get("rotation").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
+                                                  let rot = rot_deg.to_radians();
+                                                  let cos_r = rot.cos();
+                                                  let sin_r = rot.sin();
+                                                  let ldx_scr = delta.x * cos_r + delta.y * sin_r;
+                                                  let ldy_scr = -delta.x * sin_r + delta.y * cos_r;
+                                                  let w_scr = w * rect.width() * self.view.scale;
+                                                  let h_scr = h * rect.height() * self.view.scale;
+                                                  let mut new_w_scr = w_scr;
+                                                  let mut new_h_scr = h_scr;
+                                                  let mut shift_lx_scr = 0.0;
+                                                  let mut shift_ly_scr = 0.0;
+                                                  match edge_idx { 0 => { new_h_scr = (h_scr - ldy_scr).max(1.0); shift_ly_scr = ldy_scr / 2.0; },
+                                                                   1 => { new_w_scr = (w_scr + ldx_scr).max(1.0); shift_lx_scr = ldx_scr / 2.0; },
+                                                                   2 => { new_h_scr = (h_scr + ldy_scr).max(1.0); shift_ly_scr = ldy_scr / 2.0; },
+                                                                   3 => { new_w_scr = (w_scr - ldx_scr).max(1.0); shift_lx_scr = ldx_scr / 2.0; },
+                                                                   _ => {} }
+                                                  let new_w = new_w_scr / (rect.width() * self.view.scale);
+                                                  let new_h = new_h_scr / (rect.height() * self.view.scale);
+                                                  m.params.insert("width".to_string(), new_w.into());
+                                                  m.params.insert("height".to_string(), new_h.into());
+                                                  let wx_shift_scr = shift_lx_scr * cos_r - shift_ly_scr * sin_r;
+                                                  let wy_shift_scr = shift_lx_scr * sin_r + shift_ly_scr * cos_r;
+                                                  let wx_shift_norm = wx_shift_scr / (rect.width() * self.view.scale);
+                                                  let wy_shift_norm = wy_shift_scr / (rect.height() * self.view.scale);
+                                                  m.x += wx_shift_norm; m.y += wy_shift_norm;
                                               },
-                                              1 => { // Right (X+)
-                                                  // Pulling Right (Positive ldx) increases Width
-                                                  new_w = (w + ldx).max(0.01);
-                                                  shift_lx = ldx / 2.0;
-                                              },
-                                              2 => { // Bottom (Y+)
-                                                  // Pulling Down (Positive ldy) increases Height
-                                                  new_h = (h + ldy).max(0.01);
-                                                  shift_ly = ldy / 2.0;
-                                              },
-                                              3 => { // Left (X-)
-                                                  // Pulling Left (Negative ldx) increases Width
-                                                  new_w = (w - ldx).max(0.01);
-                                                  shift_lx = ldx / 2.0;
+                                              "radial" => {
+                                                  let r = m.params.get("radius").and_then(|v| v.as_f64()).unwrap_or(0.1) as f32;
+                                                  let dr_scr = delta.x;
+                                                  let dr_norm = dr_scr / (rect.width() * self.view.scale);
+                                                  m.params.insert("radius".to_string(), (r + dr_norm).max(0.01).into());
                                               },
                                               _ => {}
                                           }
-                                          
-                                          // Update Params
-                                          m.params.insert("width".to_string(), new_w.into());
-                                          m.params.insert("height".to_string(), new_h.into());
-                                          
-                                          // Apply Shift (Rotate back to World)
-                                          // shift_lx, shift_ly is Local shift relative to old center?
-                                          // Yes. If I move Top Edge up by 1, Height increases by 1, Center moves up by 0.5.
-                                          // My logic: New Center = Old Center + Shift.
-                                          // Rotated Shift:
-                                          let wx = shift_lx * cos_r - shift_ly * sin_r;
-                                          let wy = shift_lx * sin_r + shift_ly * cos_r;
-                                          
-                                          m.x += wx;
-                                          m.y += wy;
-                                      },
-                                      "radial" => {
-                                          let r = m.params.get("radius").and_then(|v| v.as_f64()).unwrap_or(0.1) as f32;
-                                          // Radial uses edge 1 (Right) from hit test, but really just distance change
-                                          // Simple: Radial always expands from center? Or edge drag?
-                                          // Let's assume edge drag just changes radius. User clicks rim.
-                                          // We can project delta onto the radial vector?
-                                          // Simple approx: if edge 1 (Right), use ldx?
-                                          // Just use local delta magnitude?
-                                          // Let's just use simple R += dx (if visually dragging right).
-                                          // Or better: Project drag vector onto (Mouse - Center) vector.
-                                          // But we don't have Mouse pos here easily (response.drag_delta).
-                                          // Let's stick to Right Edge logic since we hit-tested Right Edge.
-                                          m.params.insert("radius".to_string(), (r + dx).max(0.01).into());
-                                      },
-                                      _ => {}
+                                          // End scene mask branch
+                                      } else if let Some(m) = self.state.masks.iter_mut().find(|m| Some(m.id) == self.view.drag_id) {
+                                          // Fall back to global masks if not found
+                                          match m.mask_type.as_str() {
+                                              "scanner" => {
+                                                  let w = m.params.get("width").and_then(|v| v.as_f64()).unwrap_or(0.1) as f32;
+                                                  let h = m.params.get("height").and_then(|v| v.as_f64()).unwrap_or(0.1) as f32;
+                                                  let rot_deg = m.params.get("rotation").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
+                                                  let rot = rot_deg.to_radians();
+                                                  let cos_r = rot.cos();
+                                                  let sin_r = rot.sin();
+                                                  let ldx_scr = delta.x * cos_r + delta.y * sin_r;
+                                                  let ldy_scr = -delta.x * sin_r + delta.y * cos_r;
+                                                  let w_scr = w * rect.width() * self.view.scale;
+                                                  let h_scr = h * rect.height() * self.view.scale;
+                                                  let mut new_w_scr = w_scr;
+                                                  let mut new_h_scr = h_scr;
+                                                  let mut shift_lx_scr = 0.0;
+                                                  let mut shift_ly_scr = 0.0;
+                                                  match edge_idx { 0 => { new_h_scr = (h_scr - ldy_scr).max(1.0); shift_ly_scr = ldy_scr / 2.0; },
+                                                                   1 => { new_w_scr = (w_scr + ldx_scr).max(1.0); shift_lx_scr = ldx_scr / 2.0; },
+                                                                   2 => { new_h_scr = (h_scr + ldy_scr).max(1.0); shift_ly_scr = ldy_scr / 2.0; },
+                                                                   3 => { new_w_scr = (w_scr - ldx_scr).max(1.0); shift_lx_scr = ldx_scr / 2.0; },
+                                                                   _ => {} }
+                                                  let new_w = new_w_scr / (rect.width() * self.view.scale);
+                                                  let new_h = new_h_scr / (rect.height() * self.view.scale);
+                                                  m.params.insert("width".to_string(), new_w.into());
+                                                  m.params.insert("height".to_string(), new_h.into());
+                                                  let wx_shift_scr = shift_lx_scr * cos_r - shift_ly_scr * sin_r;
+                                                  let wy_shift_scr = shift_lx_scr * sin_r + shift_ly_scr * cos_r;
+                                                  let wx_shift_norm = wx_shift_scr / (rect.width() * self.view.scale);
+                                                  let wy_shift_norm = wy_shift_scr / (rect.height() * self.view.scale);
+                                                  m.x += wx_shift_norm; m.y += wy_shift_norm;
+                                              },
+                                              "radial" => {
+                                                  let r = m.params.get("radius").and_then(|v| v.as_f64()).unwrap_or(0.1) as f32;
+                                                  let dr_scr = delta.x; 
+                                                  let dr_norm = dr_scr / (rect.width() * self.view.scale);
+                                                  m.params.insert("radius".to_string(), (r + dr_norm).max(0.01).into());
+                                              },
+                                              _ => {}
+                                          }
+                                      }
+                                  } else if let Some(m) = self.state.masks.iter_mut().find(|m| Some(m.id) == self.view.drag_id) {
+                                      // No scene selected; operate on global masks
+                                      match m.mask_type.as_str() {
+                                          "scanner" => {
+                                              let w = m.params.get("width").and_then(|v| v.as_f64()).unwrap_or(0.1) as f32;
+                                              let h = m.params.get("height").and_then(|v| v.as_f64()).unwrap_or(0.1) as f32;
+                                              let rot_deg = m.params.get("rotation").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
+                                              let rot = rot_deg.to_radians();
+                                              let cos_r = rot.cos();
+                                              let sin_r = rot.sin();
+                                              let ldx_scr = delta.x * cos_r + delta.y * sin_r;
+                                              let ldy_scr = -delta.x * sin_r + delta.y * cos_r;
+                                              let w_scr = w * rect.width() * self.view.scale;
+                                              let h_scr = h * rect.height() * self.view.scale;
+                                              let mut new_w_scr = w_scr;
+                                              let mut new_h_scr = h_scr;
+                                              let mut shift_lx_scr = 0.0;
+                                              let mut shift_ly_scr = 0.0;
+                                              match edge_idx { 0 => { new_h_scr = (h_scr - ldy_scr).max(1.0); shift_ly_scr = ldy_scr / 2.0; },
+                                                               1 => { new_w_scr = (w_scr + ldx_scr).max(1.0); shift_lx_scr = ldx_scr / 2.0; },
+                                                               2 => { new_h_scr = (h_scr + ldy_scr).max(1.0); shift_ly_scr = ldy_scr / 2.0; },
+                                                               3 => { new_w_scr = (w_scr - ldx_scr).max(1.0); shift_lx_scr = ldx_scr / 2.0; },
+                                                               _ => {} }
+                                              let new_w = new_w_scr / (rect.width() * self.view.scale);
+                                              let new_h = new_h_scr / (rect.height() * self.view.scale);
+                                              m.params.insert("width".to_string(), new_w.into());
+                                              m.params.insert("height".to_string(), new_h.into());
+                                              let wx_shift_scr = shift_lx_scr * cos_r - shift_ly_scr * sin_r;
+                                              let wy_shift_scr = shift_lx_scr * sin_r + shift_ly_scr * cos_r;
+                                              let wx_shift_norm = wx_shift_scr / (rect.width() * self.view.scale);
+                                              let wy_shift_norm = wy_shift_scr / (rect.height() * self.view.scale);
+                                              m.x += wx_shift_norm; m.y += wy_shift_norm;
+                                          },
+                                          "radial" => {
+                                              let r = m.params.get("radius").and_then(|v| v.as_f64()).unwrap_or(0.1) as f32;
+                                              let dr_scr = delta.x; 
+                                              let dr_norm = dr_scr / (rect.width() * self.view.scale);
+                                              m.params.insert("radius".to_string(), (r + dr_norm).max(0.01).into());
+                                          },
+                                          _ => {}
+                                      }
                                   }
                               }
                          }
                     } else {
-                        self.view.offset += delta;
+                        // Pan View - offset is in Pixels
+                        self.view.offset.x += delta.x;
+                        self.view.offset.y += delta.y;
                     }
                 }
                 
@@ -854,9 +1186,31 @@ impl eframe::App for MyApp {
                      // Only draw if dense enough
                 }
                 
-                // Draw bounds (0..1)
-                let tl = to_screen(0.0, 0.0, &self.view);
-                let br = to_screen(1.0, 1.0, &self.view);
+                // Draw bounds (Fit to strips)
+                let mut b_min_x: f32 = if self.state.strips.is_empty() { 0.0 } else { f32::MAX };
+                let mut b_min_y: f32 = if self.state.strips.is_empty() { 0.0 } else { f32::MAX };
+                let mut b_max_x: f32 = if self.state.strips.is_empty() { 1.0 } else { f32::MIN };
+                let mut b_max_y: f32 = if self.state.strips.is_empty() { 1.0 } else { f32::MIN };
+
+                for s in &self.state.strips {
+                    b_min_x = b_min_x.min(s.x);
+                    b_min_y = b_min_y.min(s.y);
+                    b_max_x = b_max_x.max(s.x);
+                    b_max_y = b_max_y.max(s.y);
+                    
+                     if s.pixel_count > 1 {
+                        let len = (s.pixel_count - 1) as f32 * s.spacing;
+                        let tail_x = s.x + len * s.rotation.cos();
+                        let tail_y = s.y + len * s.rotation.sin();
+                        b_min_x = b_min_x.min(tail_x);
+                        b_min_y = b_min_y.min(tail_y);
+                        b_max_x = b_max_x.max(tail_x);
+                        b_max_y = b_max_y.max(tail_y);
+                    }
+                }
+                
+                let tl = to_screen(b_min_x, b_min_y, &self.view);
+                let br = to_screen(b_max_x, b_max_y, &self.view);
                 painter.rect_stroke(egui::Rect::from_min_max(tl, br), 0.0, egui::Stroke::new(1.0, egui::Color32::from_gray(60)));
 
                 // Strips
@@ -898,25 +1252,23 @@ impl eframe::App for MyApp {
                     // Draw pixels based on simulation data...
                     for i in 0..s.pixel_count {
                         // Calculate world pos of pixel i
-                        let angle = s.rotation.to_radians(); 
+                        let angle = s.rotation.to_radians();
                         // Note: In engine we use glam, here we use simple math or just replicate
                         let off_x = (i as f32 * s.spacing) * angle.cos();
                         let off_y = (i as f32 * s.spacing) * angle.sin();
                         let px_world = s.x + off_x;
                         let py_world = s.y + off_y;
-                        
+
                         let px_screen = to_screen(px_world, py_world, &self.view);
-                        
-                        // Color from data
+
+                        // Color from data (rgb_data is Vec<[u8; 3]>, so length is pixel count)
                         let rgb_data = &s.data;
-                        let color = if i*3+2 < rgb_data.len() * 3 { 
-                             // Wait, rgb_data is Vec<[u8; 3]>. So length is pixel count.
-                             // rgb_data[i] gives [u8; 3].
-                             if i < rgb_data.len() {
-                                 let p = rgb_data[i];
-                                 egui::Color32::from_rgb(p[0], p[1], p[2])
-                             } else { egui::Color32::GRAY }
-                        } else { egui::Color32::GRAY };
+                        let color = if i < rgb_data.len() {
+                            let p = rgb_data[i];
+                            egui::Color32::from_rgb(p[0], p[1], p[2])
+                        } else {
+                            egui::Color32::GRAY
+                        };
                         
                         painter.rect_filled(
                             egui::Rect::from_center_size(px_screen, egui::vec2(4.0, 4.0)),
@@ -927,7 +1279,7 @@ impl eframe::App for MyApp {
                 }
                 
                 // Masks
-                for m in &self.state.masks {
+                for m in &active_masks {
                     let pos = to_screen(m.x, m.y, &self.view);
                     
                     let mut rgb = m.params.get("color").and_then(|v| {
@@ -953,22 +1305,24 @@ impl eframe::App for MyApp {
                              let cos_r = rot.cos();
                              let sin_r = rot.sin();
 
-                             let half_w_scr = (w * rect.width() * self.view.scale) / 2.0;
-                             let half_h_scr = (h * rect.height() * self.view.scale) / 2.0;
+
                              
-                             // Helper to rotate point (local x,y) -> (screen x,y) considering center 'pos'
-                             let rotate_pt = |lx: f32, ly: f32| -> egui::Pos2 {
-                                 let rx = lx * cos_r - ly * sin_r;
-                                 let ry = lx * sin_r + ly * cos_r;
-                                 pos + egui::vec2(rx, ry)
+                             // Helper: rotate a normalized local offset (lx, ly) by rot and convert to screen
+                             // We rotate in WORLD/normalized space first, then map to screen.
+                             let rotate_norm_to_screen = |lx: f32, ly: f32| -> egui::Pos2 {
+                                 let rx_n = lx * cos_r - ly * sin_r;
+                                 let ry_n = lx * sin_r + ly * cos_r;
+                                 to_screen(m.x + rx_n, m.y + ry_n, &self.view)
                              };
 
-                             // 1. Draw Rotated Box
+                             // 1. Draw Rotated Box (consistent with engine math)
+                             let half_w_n = w / 2.0;
+                             let half_h_n = h / 2.0;
                              let corners = vec![
-                                 rotate_pt(-half_w_scr, -half_h_scr),
-                                 rotate_pt(half_w_scr, -half_h_scr),
-                                 rotate_pt(half_w_scr, half_h_scr),
-                                 rotate_pt(-half_w_scr, half_h_scr),
+                                 rotate_norm_to_screen(-half_w_n, -half_h_n),
+                                 rotate_norm_to_screen( half_w_n, -half_h_n),
+                                 rotate_norm_to_screen( half_w_n,  half_h_n),
+                                 rotate_norm_to_screen(-half_w_n,  half_h_n),
                              ];
                              
                              painter.add(egui::Shape::convex_polygon(
@@ -1012,7 +1366,8 @@ impl eframe::App for MyApp {
                                  phase.sin()
                              };
 
-                             let offset_x_scr = (half_w_scr) * osc_val as f32; // Half Width screen
+                             // Offset of bar center in NORMALIZED units
+                             let offset_x_n = (w / 2.0) * osc_val as f32;
                              
                              let bar_color = if mode == "gradient" {
                                   // Visualize Multi-Color Gradient
@@ -1061,40 +1416,30 @@ impl eframe::App for MyApp {
                                       egui::Color32::from_rgb(r, g, b)
                                   }
                              } else {
-                                  egui::Color32::WHITE
+                                   let c: [u8; 3] = m.params.get("color").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or([255, 255, 255]);
+                                   egui::Color32::from_rgb(c[0], c[1], c[2])
                              };
 
                              let bar_width_param = m.params.get("bar_width").and_then(|v| v.as_f64()).unwrap_or(0.1) as f32;
-                             // Bar width in config is "Max Distance", so total width is 2 * bar_width
-                             // However, intensity falls off.
-                             // Visualizing: Draw the full extent (2 * bar_width).
-                             let bar_w_scr = (bar_width_param * 2.0 * rect.width() * self.view.scale); 
-                             let half_bw = bar_w_scr / 2.0;
+                             // Visualization uses normalized units to match engine math
+                             let half_bw_n = bar_width_param; // threshold radius
+                             let half_h_n = h / 2.0;
 
                              // Bar is a vertical strip inside the box (Rotated)
-                             // Local coords: Center X = offset_x_scr, Y = -half_h .. half_h
-                             // Bar box: X = offset_x_scr +/- half_bw
+                             // Local coords in NORMALIZED space
+                             // Center X = offset_x_n, Y = -half_h_n .. half_h_n
+                             let p1 = rotate_norm_to_screen(offset_x_n - half_bw_n, -half_h_n);
+                             let p2 = rotate_norm_to_screen(offset_x_n + half_bw_n, -half_h_n);
+                             let p3 = rotate_norm_to_screen(offset_x_n + half_bw_n,  half_h_n);
+                             let p4 = rotate_norm_to_screen(offset_x_n - half_bw_n,  half_h_n);
                              
-                             let p1 = rotate_pt(offset_x_scr - half_bw, -half_h_scr); // Top-Left of Bar
-                             let p2 = rotate_pt(offset_x_scr + half_bw, -half_h_scr); // Top-Right
-                             let p3 = rotate_pt(offset_x_scr + half_bw, half_h_scr);  // Bottom-Right
-                             let p4 = rotate_pt(offset_x_scr - half_bw, half_h_scr);  // Bottom-Left
-                             
-                             let hard_edge = m.params.get("hard_edge").and_then(|v| v.as_bool()).unwrap_or(false);
+                             let _hard_edge = m.params.get("hard_edge").and_then(|v| v.as_bool()).unwrap_or(false);
                              
                              // If hard edge, solid fill. If soft, maybe use alpha?
                              // Egui simple painter doesn't do gradient fills easily.
                              // Let's rely on Color to show the center, and fading alpha?
                              // Actually, user wants Hard Edge to be visible.
-                             
-                             let mut b_color = bar_color;
-                             if !hard_edge {
-                                 // Simple visualization of soft edge: use lower alpha or smaller visual width?
-                                 // Let's use lower alpha for the "faded" part?
-                                 // Just drawing the full width as solid might be misleading for Soft.
-                                 // But for Hard Edge, it MUST be solid.
-                                 b_color = egui::Color32::from_rgba_unmultiplied(b_color.r(), b_color.g(), b_color.b(), 128);
-                             }
+                             let b_color = egui::Color32::from_rgba_unmultiplied(bar_color.r(), bar_color.g(), bar_color.b(), 80);
 
                              painter.add(egui::Shape::convex_polygon(
                                  vec![p1, p2, p3, p4],
@@ -1115,6 +1460,24 @@ impl eframe::App for MyApp {
             });
         });
         
+        // Auto-save configuration when state changes
+        if let Ok(current_json) = serde_json::to_string_pretty(&self.state) {
+            if current_json != self.last_saved_json {
+                let _ = fs::write("lighting_config.json", &current_json);
+                self.last_saved_json = current_json;
+                self.status = "Auto-saved".into();
+            }
+        }
+
         ctx.request_repaint(); 
     }
+}
+// Simple RGB color picker helper
+fn color_picker(ui: &mut egui::Ui, rgb: &mut [u8; 3]) -> bool {
+    let mut arr = [rgb[0], rgb[1], rgb[2]];
+    let resp = ui.color_edit_button_srgb(&mut arr);
+    if resp.changed() {
+        *rgb = arr;
+        true
+    } else { false }
 }

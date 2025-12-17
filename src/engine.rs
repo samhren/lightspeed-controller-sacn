@@ -1,4 +1,4 @@
-use crate::model::{AppState, Mask, PixelStrip, NetworkConfig};
+use crate::model::{AppState, Mask, PixelStrip, NetworkConfig, GlobalEffect};
 use crate::audio::AudioListener;
 use sacn::source::SacnSource; 
 use std::time::Instant;
@@ -29,8 +29,15 @@ pub struct LightingEngine {
 impl LightingEngine {
     pub fn new() -> Self {
         let local_addr = std::net::SocketAddr::from(([0, 0, 0, 0], 0));
-        let sender = SacnSource::with_ip("Lightspeed", local_addr).unwrap();
-        // Start ensuring multicast send works? 
+        let sender = SacnSource::with_ip("Lightspeed", local_addr)
+            .unwrap_or_else(|e| {
+                log::error!("Failed to create sACN sender: {:?}", e);
+                log::warn!("Attempting fallback configuration...");
+                // Try with explicit IPv4 any address as fallback
+                SacnSource::with_ip("Lightspeed", "0.0.0.0:0".parse().unwrap())
+                    .expect("Critical: Cannot initialize network stack")
+            });
+        // Start ensuring multicast send works?
         // sacn crate defaults fine usually.
         
         // sender.set_unicast_destinations(...) if needed
@@ -88,8 +95,13 @@ impl LightingEngine {
         // Hybrid Sync / Audio logic
         let mut force_snap = false;
         if let Some(audio) = &self.audio_listener {
-             // Read Volume
-             let vol = *audio.current_volume.lock().unwrap();
+             // Read Volume (handle poisoned mutex gracefully)
+             let vol = audio.current_volume.lock()
+                 .map(|v| *v)
+                 .unwrap_or_else(|poisoned| {
+                     log::warn!("Audio mutex poisoned, recovering");
+                     *poisoned.into_inner()
+                 });
              
              // Detect Peak using Sensitivity
              // Sensitivity 0.0 = Need HUGE volume (Threshold 1.0)
@@ -179,9 +191,37 @@ impl LightingEngine {
             strip.data = vec![[0, 0, 0]; strip.pixel_count];
         }
 
-        // 2. Apply Masks
-        for mask in &state.masks {
-            self.apply_mask_to_strips(mask, &mut state.strips, t, beat);
+        // 2. Apply Scene or fallback to raw masks
+        if let Some(sel_id) = state.selected_scene_id {
+            if let Some(scene) = state.scenes.iter().find(|s| s.id == sel_id).cloned() {
+                match scene.kind.as_str() {
+                    "Masks" => {
+                        for mask in &scene.masks {
+                            self.apply_mask_to_strips(mask, &mut state.strips, t, beat);
+                        }
+                    }
+                    "Global" => {
+                        if let Some(effect) = scene.global {
+                            self.apply_global_effect(&effect, &mut state.strips, t, beat);
+                        }
+                    }
+                    _ => {
+                        for mask in &state.masks {
+                            self.apply_mask_to_strips(mask, &mut state.strips, t, beat);
+                        }
+                    }
+                }
+            } else {
+                // Selected scene not found, fallback
+                for mask in &state.masks {
+                    self.apply_mask_to_strips(mask, &mut state.strips, t, beat);
+                }
+            }
+        } else {
+            // No scene selected: use masks directly
+            for mask in &state.masks {
+                self.apply_mask_to_strips(mask, &mut state.strips, t, beat);
+            }
         }
 
         // 3. Send to sACN
@@ -191,9 +231,9 @@ impl LightingEngine {
         let global_universe_offset = state.network.universe.saturating_sub(1);
 
         for strip in &state.strips {
-             // specific strip universe + global offset
-             let u = strip.universe.saturating_add(global_universe_offset);
-             
+             // specific strip universe + global offset (clamped to valid sACN range 1-63999)
+             let u = strip.universe.saturating_add(global_universe_offset).min(63999).max(1);
+
              // sACN allows multiple strips in one universe if channels don't overlap
              let start = (strip.start_channel as usize).saturating_sub(1);
              
@@ -202,22 +242,25 @@ impl LightingEngine {
              
              for (i, pixel) in strip.data.iter().enumerate() {
                  let idx = start + i * 3;
-                 if idx + 2 < entry.len() {
-                     match strip.color_order.as_str() {
-                         "GRB" => {
-                             entry[idx] = pixel[1];   // G
-                             entry[idx+1] = pixel[0]; // R
-                             entry[idx+2] = pixel[2]; // B
-                         },
-                         "BGR" => {
-                             entry[idx] = pixel[2];   // B
-                             entry[idx+1] = pixel[1]; // G
-                             entry[idx+2] = pixel[0]; // R
-                         },
-                         _ => { // RGB
-                             entry[idx] = pixel[0];   // R
-                             entry[idx+1] = pixel[1]; // G
-                             entry[idx+2] = pixel[2]; // B
+                 // Bounds check: ensure idx, idx+1, idx+2 are all valid
+                 if let Some(max_idx) = idx.checked_add(2) {
+                     if max_idx < entry.len() {
+                         match strip.color_order.as_str() {
+                             "GRB" => {
+                                 entry[idx] = pixel[1];   // G
+                                 entry[idx+1] = pixel[0]; // R
+                                 entry[idx+2] = pixel[2]; // B
+                             },
+                             "BGR" => {
+                                 entry[idx] = pixel[2];   // B
+                                 entry[idx+1] = pixel[1]; // G
+                                 entry[idx+2] = pixel[0]; // R
+                             },
+                             _ => { // RGB
+                                 entry[idx] = pixel[0];   // R
+                                 entry[idx+1] = pixel[1]; // G
+                                 entry[idx+2] = pixel[2]; // B
+                             }
                          }
                      }
                  }
@@ -348,131 +391,190 @@ impl LightingEngine {
         };
 
         if mask.mask_type == "scanner" {
-            // Scanner Logic
+            // Scanner Mask: A rectangular region with a scanning bar that sweeps back and forth
+            // Get mask dimensions in local (unrotated) space
             let width = mask.params.get("width").and_then(|v| v.as_f64()).unwrap_or(0.3) as f32;
             let height = mask.params.get("height").and_then(|v| v.as_f64()).unwrap_or(0.3) as f32;
-            let _thickness = mask.params.get("thickness").and_then(|v| v.as_f64()).unwrap_or(0.05) as f32;
-            let m_color = mask.params.get("color").and_then(|v| {
-                let arr = v.as_array()?;
-                Some([
-                    arr.get(0)?.as_u64()? as u8,
-                    arr.get(1)?.as_u64()? as u8,
-                    arr.get(2)?.as_u64()? as u8
-                ])
-            }).unwrap_or([0, 255, 255]);
-            
-            let final_color = get_color(m_color);
+            // Debug: when true, fill all pixels inside mask with white
+            let debug_fill = mask.params.get("debug_fill").and_then(|v| v.as_bool()).unwrap_or(false);
 
-            // Animation Logic (Sync vs Free)
-            let is_sync = mask.params.get("sync").and_then(|v| v.as_bool()).unwrap_or(false);
-            
-            let phase = if is_sync {
-                let rate_str = mask.params.get("rate").and_then(|v| v.as_str()).unwrap_or("1/4");
-                let divisor = match rate_str {
-                    "4 Bar" => 16.0,
-                    "2 Bar" => 8.0,
-                    "1 Bar" => 4.0,
-                    "1/2" => 2.0,
-                    "1/4" => 1.0, 
-                    "1/8" => 0.5,
-                    _ => 1.0,
-                };
-                let start_pos = mask.params.get("start_pos").and_then(|v| v.as_str()).unwrap_or("Center");
-                let offset = match start_pos {
-                    "Right" => 0.25,
-                    "Left" => 0.75,
-                    _ => 0.0, // Center
-                };
-                (beat / divisor + offset) * std::f64::consts::PI * 2.0
-            } else {
-                (t * speed * self.speed) as f64
-            };
-
-            // Motion Easing
-            let motion = mask.params.get("motion").and_then(|v| v.as_str()).unwrap_or("Smooth");
-            let osc_val = if motion == "Linear" {
-                // Triangle wave: 2/PI * asin(sin(phase))
-                // Result is -1.0 to 1.0
-                (2.0 / std::f64::consts::PI) * (phase.sin().asin())
-            } else {
-                // Smooth (Sine)
-                phase.sin()
-            };
-
-            let offset_x = (width / 2.0) * osc_val as f32;
-            let _bar_center_x = mx + offset_x;
-            
-            let bar_width = mask.params.get("bar_width").and_then(|v| v.as_f64()).unwrap_or(0.1) as f32;
-            
-            // Mask Rotation
+            // Get mask rotation
             let rotation_deg = mask.params.get("rotation").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
             let rot_rad = rotation_deg.to_radians();
             let cos_rot = rot_rad.cos();
             let sin_rot = rot_rad.sin();
 
+            // Debug logging
+            static DEBUG_LOGGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+            let should_log = !DEBUG_LOGGED.swap(true, std::sync::atomic::Ordering::Relaxed);
+            if should_log {
+                println!("\n=== SCANNER DEBUG ===");
+                println!("  width={}, height={}, rotation={}°", width, height, rotation_deg);
+                println!("  cos={}, sin={}", cos_rot, sin_rot);
+                println!("  mask pos=({}, {})", mx, my);
+                println!("  bounds: x=[{}, {}], y=[{}, {}]", -width/2.0, width/2.0, -height/2.0, height/2.0);
+            }
+
+            // Get bar parameters
+            let bar_width = mask.params.get("bar_width").and_then(|v| v.as_f64()).unwrap_or(0.1) as f32;
+            let hard_edge = mask.params.get("hard_edge").and_then(|v| v.as_bool()).unwrap_or(false);
+
+            // Calculate bar position (scanning animation)
+            let is_sync = mask.params.get("sync").and_then(|v| v.as_bool()).unwrap_or(false);
+            let phase = if is_sync {
+                let rate_str = mask.params.get("rate").and_then(|v| v.as_str()).unwrap_or("1/4");
+                let divisor = match rate_str {
+                    "4 Bar" => 16.0, "2 Bar" => 8.0, "1 Bar" => 4.0,
+                    "1/2" => 2.0, "1/4" => 1.0, "1/8" => 0.5, _ => 1.0,
+                };
+                let start_pos = mask.params.get("start_pos").and_then(|v| v.as_str()).unwrap_or("Center");
+                let offset = match start_pos {
+                    "Right" => 0.25, "Left" => 0.75, _ => 0.0,
+                };
+                (beat / divisor + offset) * std::f64::consts::PI * 2.0
+            } else {
+                let speed = mask.params.get("speed").and_then(|v| v.as_f64()).unwrap_or(1.0) as f32;
+                (t * speed * self.speed) as f64
+            };
+
+            let motion = mask.params.get("motion").and_then(|v| v.as_str()).unwrap_or("Smooth");
+            let osc_val = if motion == "Linear" {
+                (2.0 / std::f64::consts::PI) * (phase.sin().asin())
+            } else {
+                phase.sin()
+            };
+
+            // Bar position in local space
+            // Sweep the BAR CENTER within ±(width/2 - bar_width) so that
+            // the bar's EDGES can exactly reach the mask edges without relying
+            // on osc_val hitting perfect ±1.0. This prevents a dark sliver at
+            // the mask boundaries, especially noticeable when rotated.
+            let sweep_range = (width / 2.0) - bar_width;
+            let bar_local_x = sweep_range * osc_val as f32;
+
+            // Debug bar position - DETAILED
+            static mut LAST_LOG_TIME: f32 = 0.0;
+            let should_log_detailed = unsafe {
+                if t - LAST_LOG_TIME > 0.5 { // Log every 0.5 seconds
+                    LAST_LOG_TIME = t;
+                    true
+                } else {
+                    false
+                }
+            };
+
+            if should_log_detailed {
+                println!("\n=== BAR POSITION DEBUG (t={:.2}) ===", t);
+                println!("  width={:.3}, bar_width={:.3}", width, bar_width);
+                println!("  sweep_range = width/2 - bar_width = {:.3} - {:.3} = {:.3}",
+                         width/2.0, bar_width, sweep_range);
+                println!("  osc_val={:.3}, bar_local_x={:.3}", osc_val, bar_local_x);
+                println!("  Bar center range: [{:.3}, {:.3}]", -sweep_range, sweep_range);
+                println!("  Bar LEFT edge = bar_center - bar_width = {:.3} - {:.3} = {:.3}",
+                         bar_local_x, bar_width, bar_local_x - bar_width);
+                println!("  Bar RIGHT edge = bar_center + bar_width = {:.3} + {:.3} = {:.3}",
+                         bar_local_x, bar_width, bar_local_x + bar_width);
+                println!("  Mask bounds: x=[{:.3}, {:.3}]", -width/2.0, width/2.0);
+                println!("  Bar SHOULD reach edges: [{:.3}, {:.3}]", -width/2.0, width/2.0);
+
+                // Check if bar is at extremes
+                if osc_val < -0.9 {
+                    println!("  >>> AT LEFT EXTREME: bar left edge = {:.3}, mask left = {:.3}, diff = {:.3}",
+                             bar_local_x - bar_width, -width/2.0, (bar_local_x - bar_width) - (-width/2.0));
+                } else if osc_val > 0.9 {
+                    println!("  >>> AT RIGHT EXTREME: bar right edge = {:.3}, mask right = {:.3}, diff = {:.3}",
+                             bar_local_x + bar_width, width/2.0, (bar_local_x + bar_width) - (width/2.0));
+                }
+            }
+
+            // Get color
+            let m_color = mask.params.get("color").and_then(|v| {
+                let arr = v.as_array()?;
+                Some([arr.get(0)?.as_u64()? as u8, arr.get(1)?.as_u64()? as u8, arr.get(2)?.as_u64()? as u8])
+            }).unwrap_or([0, 255, 255]);
+            let final_color = get_color(m_color);
+
+            // Process each strip
             for i in 0..strips.len() {
                 let strip = &mut strips[i];
-                let cos_r = strip.rotation.cos();
-                let sin_r = strip.rotation.sin();
+                let pixel_limit = strip.pixel_count.min(strip.data.len());
 
-                for p in 0..strip.pixel_count {
-                    // Calculate pixel position
+                for p in 0..pixel_limit {
+                    // 1. Calculate pixel position in world space
                     let local_x = p as f32 * strip.spacing;
-                    let local_y = 0.0;
-                    
-                    let rx = local_x * cos_r - local_y * sin_r;
-                    let ry = local_x * sin_r + local_y * cos_r;
-                    
-                    let px = strip.x + rx;
-                    let py = strip.y + ry;
-                    
-                    // Transform pixel into Mask's Local Space (Centered at 0, aligned with Mask Rotation)
-                    // Translate to origin
-                    let dx_world = px - mx;
-                    let dy_world = py - my;
-                    
-                    // Rotate by -rot (Inverse of Mask Rotation)
-                    // x' = x cos(-t) - y sin(-t) = x cos t + y sin t
-                    // y' = x sin(-t) + y cos(-t) = -x sin t + y cos t
-                    let mask_local_x = dx_world * cos_rot + dy_world * sin_rot;
-                    let mask_local_y = -dx_world * sin_rot + dy_world * cos_rot;
-                    
-                    // Now check bounds in Local Space
-                    // Width applies to Local X (Scan Axis), Height applies to Local Y
-                    if mask_local_x >= -width/2.0 && mask_local_x <= width/2.0 &&
-                       mask_local_y >= -height/2.0 && mask_local_y <= height/2.0 {
-                           
-                        // Bar movement is along local X
-                        // Bar center relative to Mask Center (mx)
-                        // offset_x is already relative to center
-                        let bar_center_local_x = offset_x;
-                        
-                        let dist_to_bar = (mask_local_x - bar_center_local_x).abs();
-                        let max_dist = bar_width; 
-                        let mut intensity = (1.0 - dist_to_bar / max_dist).max(0.0);
-                        
-                        let hard_edge = mask.params.get("hard_edge").and_then(|v| v.as_bool()).unwrap_or(false);
-                        if hard_edge {
-                             intensity = if intensity > 0.0 { 1.0 } else { 0.0 };
+                    let px = strip.x + local_x * strip.rotation.cos();
+                    let py = strip.y + local_x * strip.rotation.sin();
+
+                    // 2. Transform to mask's local coordinate system
+                    let dx = px - mx;
+                    let dy = py - my;
+                    let mask_local_x = dx * cos_rot + dy * sin_rot;
+                    let mask_local_y = -dx * sin_rot + dy * cos_rot;
+
+                    // 3. Check if pixel is within mask bounds (rectangular boundary)
+                    let half_w = width / 2.0;
+                    let half_h = height / 2.0;
+
+                    // Add small epsilon for floating point tolerance
+                    const EPSILON: f32 = 0.0001;
+
+                    // Debug: Log pixels that SHOULD light up at extremes
+                    if should_log_detailed && i == 0 {
+                        let passes_bounds = (mask_local_x >= -(half_w + EPSILON) && mask_local_x <= (half_w + EPSILON)) &&
+                                    (mask_local_y >= -(half_h + EPSILON) && mask_local_y <= (half_h + EPSILON));
+                        let dist_to_bar = (mask_local_x - bar_local_x).abs();
+                        let in_bar = dist_to_bar <= bar_width;
+
+                        // Log pixels near mask edges
+                        let near_left_edge = mask_local_x < -half_w + 0.3;
+                        let near_right_edge = mask_local_x > half_w - 0.3;
+
+                        if (near_left_edge || near_right_edge) && passes_bounds {
+                            println!("  Strip {} Pixel {}: local_x={:.3}, local_y={:.3}, dist_to_bar={:.3}, in_bar={}, {}",
+                                i, p, mask_local_x, mask_local_y, dist_to_bar, in_bar,
+                                if near_left_edge { "NEAR LEFT EDGE" } else { "NEAR RIGHT EDGE" });
                         }
-                        
-                        if intensity > 0.0 {
-                             let r = (final_color[0] as f32 * intensity) as u8;
-                             let g = (final_color[1] as f32 * intensity) as u8;
-                             let b = (final_color[2] as f32 * intensity) as u8;
-                             
-                             let curr = strip.data[p];
-                             strip.data[p] = [
-                                 curr[0].saturating_add(r),
-                                 curr[1].saturating_add(g),
-                                 curr[2].saturating_add(b)
-                             ];
+                    }
+
+                    if (mask_local_x >= -(half_w + EPSILON) && mask_local_x <= (half_w + EPSILON)) &&
+                       (mask_local_y >= -(half_h + EPSILON) && mask_local_y <= (half_h + EPSILON)) {
+
+                        if debug_fill {
+                            // Visualization: show everything the mask considers "inside"
+                            strip.data[p] = [255, 255, 255];
+                            continue;
+                        }
+
+                        // 4. Check if pixel is hit by the scanning bar
+                        let dist_to_bar = (mask_local_x - bar_local_x).abs();
+
+                        if dist_to_bar <= bar_width {
+                            // Pixel is inside mask AND hit by bar
+                            let intensity = if hard_edge {
+                                1.0
+                            } else {
+                                (1.0 - dist_to_bar / bar_width).max(0.0)
+                            };
+
+                            if intensity > 0.0 {
+                                let r = (final_color[0] as f32 * intensity) as u8;
+                                let g = (final_color[1] as f32 * intensity) as u8;
+                                let b = (final_color[2] as f32 * intensity) as u8;
+
+                                let curr = strip.data[p];
+                                strip.data[p] = [
+                                    curr[0].saturating_add(r),
+                                    curr[1].saturating_add(g),
+                                    curr[2].saturating_add(b)
+                                ];
+                            }
                         }
                     }
                 }
             }
         } else if mask.mask_type == "radial" {
              let radius = mask.params.get("radius").and_then(|v| v.as_f64()).unwrap_or(0.2) as f32;
+             let debug_fill = mask.params.get("debug_fill").and_then(|v| v.as_bool()).unwrap_or(false);
              let m_color = mask.params.get("color").and_then(|v| {
                 let arr = v.as_array()?;
                 Some([
@@ -486,12 +588,14 @@ impl LightingEngine {
 
              for strip in strips.iter_mut() {
                 // ALIGNMENT FIX: Start at 0
-                let start_idx_x = 0.0; 
-                
+                let start_idx_x = 0.0;
+
                 let cos_r = strip.rotation.cos();
                 let sin_r = strip.rotation.sin();
 
-                for i in 0..strip.pixel_count {
+                // Bounds check: use minimum of pixel_count and actual data length to avoid race conditions
+                let pixel_limit = strip.pixel_count.min(strip.data.len());
+                for i in 0..pixel_limit {
                     let local_x = start_idx_x + (i as f32 * strip.spacing);
                     let local_y = 0.0;
                     let px = strip.x + (local_x * cos_r - local_y * sin_r);
@@ -499,9 +603,13 @@ impl LightingEngine {
 
                     let dist = ((px - mx).powi(2) + (py - my).powi(2)).sqrt();
                     if dist < radius {
+                         if debug_fill {
+                             strip.data[i] = [255, 255, 255];
+                             continue;
+                         }
                          let intensity = 1.0 - (dist / radius);
                          let intensity = intensity.clamp(0.0, 1.0);
-                         
+
                          let [r, g, b] = strip.data[i];
                          strip.data[i] = [
                               r.saturating_add((final_color[0] as f32 * intensity) as u8),
@@ -535,6 +643,91 @@ impl LightingEngine {
     
     pub fn get_time(&self) -> f32 {
         self.start_time.elapsed().as_secs_f32()
+    }
+}
+
+impl LightingEngine {
+    fn apply_global_effect(&self, effect: &GlobalEffect, strips: &mut [PixelStrip], t: f32, beat: f64) {
+        match effect.kind.as_str() {
+            "Solid" => {
+                let color_arr = effect.params.get("color").and_then(|v| v.as_array());
+                let color = color_arr
+                    .and_then(|arr| Some([
+                        arr.get(0)?.as_u64()? as u8,
+                        arr.get(1)?.as_u64()? as u8,
+                        arr.get(2)?.as_u64()? as u8,
+                    ]))
+                    .unwrap_or([255, 255, 255]);
+                for s in strips.iter_mut() {
+                    let cnt = s.pixel_count.min(s.data.len());
+                    for i in 0..cnt { s.data[i] = color; }
+                }
+            }
+            "Rainbow" => {
+                let speed = effect.params.get("speed").and_then(|v| v.as_f64()).unwrap_or(0.2) as f32;
+                let hue = (t * speed * self.speed).fract();
+                let c = hsv_to_rgb(hue, 1.0, 1.0);
+                for s in strips.iter_mut() {
+                    let cnt = s.pixel_count.min(s.data.len());
+                    for i in 0..cnt { s.data[i] = c; }
+                }
+            }
+            "Flash" => {
+                let color_arr = effect.params.get("color").and_then(|v| v.as_array());
+                let color = color_arr
+                    .and_then(|arr| Some([
+                        arr.get(0)?.as_u64()? as u8,
+                        arr.get(1)?.as_u64()? as u8,
+                        arr.get(2)?.as_u64()? as u8,
+                    ]))
+                    .unwrap_or([255, 255, 255]);
+                
+                let rate_str = effect.params.get("rate").and_then(|v| v.as_str()).unwrap_or("1 Bar");
+                let divisor = match rate_str {
+                    "4 Bar" => 16.0, "1 Bar" => 4.0, "1/2" => 2.0, "1/4" => 1.0, "1/8" => 0.5, _ => 4.0,
+                };
+                
+                let decay = effect.params.get("decay").and_then(|v| v.as_f64()).unwrap_or(5.0);
+                
+                // Calculate phase 0..1
+                let phase = (beat / divisor).fract();
+                // Exponential decay: starts at 1.0, drops quickly
+                // To make it flash *on the beat*, we want peak at phase=0.
+                // (1.0 - phase) is linear decay.
+                // We want sharp decay.
+                // However, phase wraps 0->1.
+                // If phase is 0.0 (just hit), intensity 1.0.
+                // If phase is 0.5, intensity should be low.
+                let intensity = (1.0 - phase).powf(decay) as f32;
+                
+                if intensity > 0.01 {
+                    for s in strips.iter_mut() {
+                        let cnt = s.pixel_count.min(s.data.len());
+                        for i in 0..cnt {
+                             // Mix additive? Or replace? 
+                             // Global usually replaces if it's the only thing. 
+                             // But flash might be cool additive?
+                             // User asked for "flash on bpm". Usually implies a strobe effect.
+                             // Replacing is safer/clearer.
+                             let r = (color[0] as f32 * intensity) as u8;
+                             let g = (color[1] as f32 * intensity) as u8;
+                             let b = (color[2] as f32 * intensity) as u8;
+                             s.data[i] = [r, g, b];
+                        }
+                    }
+                } else {
+                     // Black out (strobe off)
+                     // If we want it to flash *over* something, we'd need mixing, 
+                     // but Global Effect currently *is* the scene content.
+                     // So we write silence.
+                     for s in strips.iter_mut() {
+                        let cnt = s.pixel_count.min(s.data.len());
+                        for i in 0..cnt { s.data[i] = [0, 0, 0]; }
+                     }
+                }
+            }
+            _ => {}
+        }
     }
 }
 

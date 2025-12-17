@@ -1,145 +1,98 @@
 {
   "strips": [
     {
-      "id": 8832829308603891302,
+      "id": 0,
       "universe": 1,
       "start_channel": 1,
-      "pixel_count": 129,
-      "x": 0.0,
-      "y": 0.0,
-      "spacing": 0.01,
-      "rotation": 0.0,
-      "color_order": "GRB"
-    },
-    {
-      "id": 2461865209760647142,
-      "universe": 2,
-      "start_channel": 1,
-      "pixel_count": 129,
-      "x": -0.001522013,
-      "y": 0.09519678,
-      "spacing": 0.01,
-      "rotation": 0.0,
-      "color_order": "RGB"
-    },
-    {
-      "id": 8832829308603891303,
-      "universe": 3,
-      "start_channel": 1,
-      "pixel_count": 129,
-      "x": 0.0,
-      "y": 0.2,
-      "spacing": 0.01,
-      "rotation": 0.0,
-      "color_order": "RGB"
-    },
-    {
-      "id": 8832829308603891306,
-      "universe": 4,
-      "start_channel": 1,
-      "pixel_count": 129,
-      "x": 0.0,
-      "y": 0.3,
-      "spacing": 0.01,
-      "rotation": 0.0,
-      "color_order": "RGB"
-    },
-    {
-      "id": 8832829308603891309,
-      "universe": 5,
-      "start_channel": 1,
-      "pixel_count": 129,
-      "x": 0.0,
-      "y": 0.5,
-      "spacing": 0.01,
-      "rotation": 0.0,
-      "color_order": "RGB"
-    },
-    {
-      "id": 15991245446827705515,
-      "universe": 6,
-      "start_channel": 1,
-      "pixel_count": 129,
-      "x": 0.0,
-      "y": 0.4,
-      "spacing": 0.01,
+      "pixel_count": 80,
+      "x": 0.66231626,
+      "y": 0.88658786,
+      "spacing": 0.05,
       "rotation": 0.0,
       "color_order": "RGB"
     }
   ],
-  "masks": [
+  "masks": [],
+  "scenes": [
     {
-      "id": 6640953581399657906,
-      "mask_type": "scanner",
-      "x": 0.37797582,
-      "y": 0.86641854,
-      "params": {
-        "gradient_colors": [
-          [
+      "id": 13139036481543109624,
+      "name": "Rainbow",
+      "kind": "Global",
+      "masks": [
+        {
+          "id": 17628172261519921773,
+          "mask_type": "scanner",
+          "x": 0.5,
+          "y": 0.5,
+          "params": {
+            "color": [
+              0,
+              255,
+              255
+            ],
+            "width": 0.3,
+            "speed": 1.0,
+            "height": 0.3
+          }
+        }
+      ],
+      "global": {
+        "kind": "Rainbow",
+        "params": {}
+      }
+    },
+    {
+      "id": 3656755494743042563,
+      "name": "Scene 2",
+      "kind": "Masks",
+      "masks": [
+        {
+          "id": 3022907389976888771,
+          "mask_type": "scanner",
+          "x": 2.6984818,
+          "y": 0.8997641,
+          "params": {
+            "hard_edge": false,
+            "rotation": 0.0,
+            "color": [
+              0,
+              255,
+              255
+            ],
+            "speed": 1.0,
+            "height": 0.2896726727485657,
+            "bar_width": 0.58,
+            "width": 4.715487957000732,
+            "sync": true,
+            "rate": "1 Bar"
+          }
+        }
+      ],
+      "global": null
+    },
+    {
+      "id": 6406027995859534812,
+      "name": "Flash BPM",
+      "kind": "Global",
+      "masks": [],
+      "global": {
+        "kind": "Flash",
+        "params": {
+          "speed": 0.2,
+          "decay": 3.0,
+          "rate": "1/4",
+          "color": [
+            184,
             255,
-            0,
             0
-          ],
-          [
-            0,
-            255,
-            203
-          ],
-          [
-            224,
-            0,
-            255
-          ],
-          [
-            0,
-            83,
-            255
           ]
-        ],
-        "color": [
-          255,
-          0,
-          0
-        ],
-        "phase_offset": 0.9300000000000002,
-        "height": 0.5397939682006836,
-        "motion": "Smooth",
-        "speed": 2.0,
-        "hard_edge": true,
-        "color2": [
-          244,
-          0,
-          0
-        ],
-        "width": 0.9651561379432678,
-        "rotation": 90.0,
-        "color_mode": "static",
-        "sync": false,
-        "start_pos": "Left",
-        "rate": "1 Bar",
-        "bar_width": 0.2
-      }
-    },
-    {
-      "id": 18100661347185521230,
-      "mask_type": "scanner",
-      "x": 0.4812241,
-      "y": 0.021061419,
-      "params": {
-        "color": [
-          0,
-          255,
-          255
-        ],
-        "width": 0.6834729313850403,
-        "rotation": 70.0,
-        "height": 0.30000001192092896,
-        "speed": 1.0
+        }
       }
     }
   ],
+  "selected_scene_id": 6406027995859534812,
   "network": {
-    "use_multicast": false,
+    "use_multicast": true,
     "unicast_ip": "192.168.1.50",
     "universe": 1
   },

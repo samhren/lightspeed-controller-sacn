@@ -1,7 +1,0 @@
-rumps
-flask
-sacn
-psutil
-aalink
-shapely
-numpy

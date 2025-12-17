@@ -42,6 +42,11 @@ impl AudioListener {
 }
 
 fn check_audio(data: &[f32], peak_flag: &Arc<AtomicBool>, vol_lock: &Arc<Mutex<f32>>) {
+    // Guard against empty buffers
+    if data.is_empty() {
+        return;
+    }
+
     // 1. Calc RMS (Volume)
     let mut sum_squares = 0.0;
     for &sample in data {

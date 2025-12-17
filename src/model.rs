@@ -2,6 +2,28 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct GlobalEffect {
+    pub kind: String,                   // "Solid" | "Rainbow"
+    pub params: HashMap<String, serde_json::Value>,
+}
+
+impl Default for GlobalEffect {
+    fn default() -> Self {
+        Self { kind: "Rainbow".into(), params: HashMap::new() }
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct Scene {
+    pub id: u64,
+    pub name: String,
+    pub kind: String,                  // "Masks" | "Global"
+    #[serde(default)]
+    pub masks: Vec<Mask>,              // used when kind=="Masks"
+    pub global: Option<GlobalEffect>,  // used when kind=="Global"
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct PixelStrip {
     pub id: u64,
     pub universe: u16,
@@ -68,6 +90,9 @@ impl Default for NetworkConfig {
 pub struct AppState {
     pub strips: Vec<PixelStrip>,
     pub masks: Vec<Mask>,
+    #[serde(default)]
+    pub scenes: Vec<Scene>,
+    pub selected_scene_id: Option<u64>,
     #[serde(default)]
     pub network: NetworkConfig,
     pub bind_address: Option<String>,
