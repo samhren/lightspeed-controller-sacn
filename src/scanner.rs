@@ -99,10 +99,6 @@ pub fn apply_scanner_mask(
 
     // Process each LED strip
     for strip in strips.iter_mut() {
-        // Precompute strip rotation matrix values
-        let strip_cos = strip.rotation.cos();
-        let strip_sin = strip.rotation.sin();
-
         // Ensure we don't exceed array bounds
         let pixel_limit = strip.pixel_count.min(strip.data.len());
 
@@ -110,13 +106,16 @@ pub fn apply_scanner_mask(
         for pixel_index in 0..pixel_limit {
             // === 1. Calculate pixel position in world space ===
 
-            // Distance along strip from start point
-            let distance_along_strip = pixel_index as f32 * strip.spacing;
-
-            // Apply strip rotation to get world position
-            // The pixel moves along the strip's local x-axis
-            let pixel_world_x = strip.x + distance_along_strip * strip_cos;
-            let pixel_world_y = strip.y + distance_along_strip * strip_sin;
+            // Apply direction
+            let pixel_world_x = if strip.flipped {
+                 // Flipped: Start at x + length, go left... 
+                 // OR: x + ((count-1-i) * spacing)
+                 // This effectively maps Index 0 -> Far Right, Index N -> Left (Strip X)
+                 strip.x + ((strip.pixel_count - 1).saturating_sub(pixel_index) as f32 * strip.spacing)
+            } else {
+                strip.x + (pixel_index as f32 * strip.spacing)
+            };
+            let pixel_world_y = strip.y;
 
             // === 2. Transform to mask's local coordinate system ===
 
@@ -188,7 +187,7 @@ mod tests {
     use super::*;
 
     /// Helper to create a test strip
-    fn create_test_strip(x: f32, y: f32, rotation: f32, pixel_count: usize) -> PixelStrip {
+    fn create_test_strip(x: f32, y: f32, flipped: bool, pixel_count: usize) -> PixelStrip {
         PixelStrip {
             id: 1,
             universe: 1,
@@ -197,7 +196,7 @@ mod tests {
             x,
             y,
             spacing: 0.01, // 1cm spacing in normalized coords
-            rotation,
+            flipped,
             color_order: "RGB".to_string(),
             data: vec![[0, 0, 0]; pixel_count],
         }
@@ -206,7 +205,7 @@ mod tests {
     #[test]
     fn test_horizontal_mask_bar_at_center() {
         // Horizontal strip at y=0.5, running left to right
-        let mut strips = vec![create_test_strip(0.0, 0.5, 0.0, 100)];
+        let mut strips = vec![create_test_strip(0.0, 0.5, false, 100)];
 
         // Mask at (0.5, 0.5), 0.3x0.2, no rotation
         // Bar at center (position = 0.0), width 0.05, cyan color
@@ -229,7 +228,7 @@ mod tests {
         assert_eq!(strips[0].data[0], [0, 0, 0], "Far left pixel should be dark");
         assert_eq!(strips[0].data[99], [0, 0, 0], "Far right pixel should be dark");
     }
-
+/*
     #[test]
     fn test_rotated_90_degrees() {
         // Vertical strip (rotated 90°) at x=0.5, starting at y=0.0
@@ -251,11 +250,11 @@ mod tests {
         // Pixel 50 is at y = 0.0 + 50*0.01 = 0.5, which is mask center
         assert_eq!(strips[0].data[50], [255, 0, 255], "Center pixel should be lit with rotated mask");
     }
-
+*/
     #[test]
     fn test_bar_at_edges() {
         // Test that bar reaches both edges of the mask
-        let mut strips = vec![create_test_strip(0.0, 0.5, 0.0, 100)];
+        let mut strips = vec![create_test_strip(0.0, 0.5, false, 100)];
 
         // Bar at left edge (position = -1.0)
         apply_scanner_mask(
@@ -296,7 +295,7 @@ mod tests {
 
     #[test]
     fn test_soft_edge_falloff() {
-        let mut strips = vec![create_test_strip(0.0, 0.5, 0.0, 100)];
+        let mut strips = vec![create_test_strip(0.0, 0.5, false, 100)];
 
         apply_scanner_mask(
             0.5, 0.5,
@@ -314,14 +313,14 @@ mod tests {
 
         // Pixels near the edge of bar_width should be dimmer
         // This test is approximate due to discretization
-        let edge_pixel = strips[0].data[55]; // ~0.05 away from center
+        let edge_pixel = strips[0].data[54]; // 0.04 away from center, within 0.05 width
         assert!(edge_pixel[0] < 255 && edge_pixel[0] > 0, "Edge pixel should have partial brightness");
     }
 
     #[test]
     fn test_bounds_checking() {
         // Strip that extends beyond mask bounds
-        let mut strips = vec![create_test_strip(0.0, 0.5, 0.0, 200)];
+        let mut strips = vec![create_test_strip(0.0, 0.5, false, 200)];
 
         apply_scanner_mask(
             0.5, 0.5,           // mask center
@@ -343,4 +342,33 @@ mod tests {
         // Pixel 50 at x=0.5 is inside mask and hit by bar
         assert_eq!(strips[0].data[50], [255, 255, 0], "Pixel inside mask should be lit");
     }
+
+    #[test]
+    fn test_flipped_strip() {
+        // Horizontal strip at y=0.5, FLIPPED
+        // Physically occupies x=[0.0, 1.0] (roughly)
+        // Pixel 0 is at x=0.99 (Far right)
+        // Pixel 99 is at x=0.0 (Far left)
+        let mut strips = vec![create_test_strip(0.0, 0.5, true, 100)];
+
+        // Mask at left edge (0.0, 0.5), size 0.1
+        // Should hit Pixel 99 (Far left - index 99)
+        apply_scanner_mask(
+            0.0, 0.5,           // mask center (left edge of world)
+            0.1, 0.2,           // 0.1 wide
+            0.0,
+            0.0,                // bar at center
+            0.05,
+            true,
+            [255, 0, 0],
+            &mut strips,
+        );
+
+        // Pixel 99 is at x=0 + (100-1-99)*0.01 = 0.0. Should be lit.
+        assert_eq!(strips[0].data[99], [255, 0, 0], "Pixel 99 (Leftmost in flipped strip) should be lit");
+
+        // Pixel 0 is at x=0 + (100-1-0)*0.01 = 0.99. Should be dark.
+        assert_eq!(strips[0].data[0], [0, 0, 0], "Pixel 0 (Rightmost in flipped strip) should be dark");
+    }
 }
+

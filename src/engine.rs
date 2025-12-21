@@ -5,6 +5,13 @@ use std::time::Instant;
 
 use rusty_link::{AblLink, SessionState};
 
+struct SparklePixel {
+    strip_id: u64,
+    pixel_index: usize,
+    birth_time: f32,
+    color: [u8; 3],
+}
+
 pub struct LightingEngine {
     sender: SacnSource,
     link: AblLink,
@@ -34,6 +41,11 @@ pub struct LightingEngine {
     last_audio_beat_time: Option<Instant>,
     phase_error: f64, // How far off we are from audio beats (in beats)
     phase_correction_rate: f64, // How fast we correct (beats per second)
+
+    // Sparkle effect state tracking
+    sparkle_states: Vec<SparklePixel>,
+    // Burst effect radius smoothing per-mask
+    burst_radius_states: std::collections::HashMap<u64, f32>,
 }
 
 impl LightingEngine {
@@ -79,6 +91,8 @@ impl LightingEngine {
             last_audio_beat_time: None,
             phase_error: 0.0,
             phase_correction_rate: 0.5, // Correct half a beat per second when out of sync
+            sparkle_states: Vec::new(),
+            burst_radius_states: std::collections::HashMap::new(),
         }
     }
 
@@ -463,7 +477,7 @@ impl LightingEngine {
         }
     }
 
-    fn apply_mask_to_strips(&self, mask: &Mask, strips: &mut [PixelStrip], t: f32, beat: f64) {
+    fn apply_mask_to_strips(&mut self, mask: &Mask, strips: &mut [PixelStrip], t: f32, beat: f64) {
         let mx = mask.x;
         let my = mask.y;
         
@@ -538,8 +552,10 @@ impl LightingEngine {
         if mask.mask_type == "scanner" {
             // Scanner Mask: A rectangular region with a scanning bar that sweeps back and forth
             // Get mask dimensions in local (unrotated) space
-            let width = mask.params.get("width").and_then(|v| v.as_f64()).unwrap_or(0.3) as f32;
-            let height = mask.params.get("height").and_then(|v| v.as_f64()).unwrap_or(0.3) as f32;
+            let base_width = mask.params.get("width").and_then(|v| v.as_f64()).unwrap_or(0.3) as f32;
+            let base_height = mask.params.get("height").and_then(|v| v.as_f64()).unwrap_or(0.3) as f32;
+            let width = apply_lfo_modulation(base_width, &mask.params, "width", t, beat);
+            let height = apply_lfo_modulation(base_height, &mask.params, "height", t, beat);
             // Debug: when true, fill all pixels inside mask with white
             let debug_fill = mask.params.get("debug_fill").and_then(|v| v.as_bool()).unwrap_or(false);
 
@@ -552,7 +568,8 @@ impl LightingEngine {
 
 
             // Get bar parameters
-            let bar_width = mask.params.get("bar_width").and_then(|v| v.as_f64()).unwrap_or(0.1) as f32;
+            let base_bar_width = mask.params.get("bar_width").and_then(|v| v.as_f64()).unwrap_or(0.1) as f32;
+            let bar_width = apply_lfo_modulation(base_bar_width, &mask.params, "bar_width", t, beat);
             let hard_edge = mask.params.get("hard_edge").and_then(|v| v.as_bool()).unwrap_or(false);
 
             // Calculate bar position (scanning animation)
@@ -615,9 +632,13 @@ impl LightingEngine {
 
                 for p in 0..pixel_limit {
                     // 1. Calculate pixel position in world space
-                    let local_x = p as f32 * strip.spacing;
-                    let px = strip.x + local_x * strip.rotation.cos();
-                    let py = strip.y + local_x * strip.rotation.sin();
+                    let local_pos_x = if strip.flipped {
+                        ((strip.pixel_count - 1).saturating_sub(p)) as f32 * strip.spacing
+                    } else {
+                        p as f32 * strip.spacing
+                    };
+                    let px = strip.x + local_pos_x;
+                    let py = strip.y;
 
                     // 2. Transform to mask's local coordinate system
                     let dx = px - mx;
@@ -682,7 +703,8 @@ impl LightingEngine {
                 }
             }
         } else if mask.mask_type == "radial" {
-             let radius = mask.params.get("radius").and_then(|v| v.as_f64()).unwrap_or(0.2) as f32;
+             let base_radius = mask.params.get("radius").and_then(|v| v.as_f64()).unwrap_or(0.2) as f32;
+             let radius = apply_lfo_modulation(base_radius, &mask.params, "radius", t, beat);
              let debug_fill = mask.params.get("debug_fill").and_then(|v| v.as_bool()).unwrap_or(false);
              let m_color = mask.params.get("color").and_then(|v| {
                 let arr = v.as_array()?;
@@ -699,16 +721,16 @@ impl LightingEngine {
                 // ALIGNMENT FIX: Start at 0
                 let start_idx_x = 0.0;
 
-                let cos_r = strip.rotation.cos();
-                let sin_r = strip.rotation.sin();
-
-                // Bounds check: use minimum of pixel_count and actual data length to avoid race conditions
                 let pixel_limit = strip.pixel_count.min(strip.data.len());
                 for i in 0..pixel_limit {
                     let local_x = start_idx_x + (i as f32 * strip.spacing);
                     let local_y = 0.0;
-                    let px = strip.x + (local_x * cos_r - local_y * sin_r);
-                    let py = strip.y + (local_x * sin_r + local_y * cos_r);
+                    
+                    let (px, py) = if strip.flipped {
+                         (strip.x - local_x, strip.y)
+                    } else {
+                         (strip.x + local_x, strip.y)
+                    };
 
                     let dist = ((px - mx).powi(2) + (py - my).powi(2)).sqrt();
                     if dist < radius {
@@ -728,6 +750,64 @@ impl LightingEngine {
                     }
                  }
               }
+        } else if mask.mask_type == "burst" {
+            // Burst Mask: Audio-reactive radial mask that grows/shrinks with music
+            let base_radius = mask.params.get("base_radius").and_then(|v| v.as_f64()).unwrap_or(0.1) as f32;
+            let max_radius = mask.params.get("max_radius").and_then(|v| v.as_f64()).unwrap_or(0.5) as f32;
+            let sensitivity = mask.params.get("sensitivity").and_then(|v| v.as_f64()).unwrap_or(0.5) as f32;
+            let decay = mask.params.get("decay").and_then(|v| v.as_f64()).unwrap_or(0.05) as f32;
+
+            let color = mask.params.get("color").and_then(|v| {
+                let arr = v.as_array()?;
+                Some([arr.get(0)?.as_u64()? as u8, arr.get(1)?.as_u64()? as u8, arr.get(2)?.as_u64()? as u8])
+            }).unwrap_or([255, 100, 0]);
+
+            // Get audio volume
+            let audio_vol = if let Some(audio) = &self.audio_listener {
+                audio.current_volume.lock().map(|v| *v).unwrap_or(0.0)
+            } else {
+                0.0
+            };
+
+            // Calculate target radius
+            let expansion = (audio_vol * sensitivity).min(1.0);
+            let target_radius = base_radius + (max_radius - base_radius) * expansion;
+
+            // Smooth to target
+            let current_radius = self.burst_radius_states.entry(mask.id).or_insert(base_radius);
+            *current_radius = *current_radius + (target_radius - *current_radius) * decay;
+
+            let mx = mask.x;
+            let my = mask.y;
+
+            // Render like radial mask
+            for strip in strips.iter_mut() {
+                let pixel_count = strip.pixel_count.min(strip.data.len());
+                for i in 0..pixel_count {
+                    let local_x = if strip.flipped {
+                         ((strip.pixel_count - 1).saturating_sub(i)) as f32 * strip.spacing
+                    } else {
+                         i as f32 * strip.spacing
+                    };
+                    let px = strip.x + local_x;
+                    let py = strip.y;
+
+                    let dist = ((px - mx).powi(2) + (py - my).powi(2)).sqrt();
+                    if dist < *current_radius {
+                        let intensity = (1.0 - dist / *current_radius).clamp(0.0, 1.0);
+
+                        let r = (color[0] as f32 * intensity) as u8;
+                        let g = (color[1] as f32 * intensity) as u8;
+                        let b = (color[2] as f32 * intensity) as u8;
+
+                        strip.data[i] = [
+                            strip.data[i][0].saturating_add(r),
+                            strip.data[i][1].saturating_add(g),
+                            strip.data[i][2].saturating_add(b),
+                        ];
+                    }
+                }
+            }
         }
     }
 
@@ -769,7 +849,7 @@ impl LightingEngine {
 }
 
 impl LightingEngine {
-    fn apply_global_effect(&self, effect: &GlobalEffect, strips: &mut [PixelStrip], t: f32, beat: f64) {
+    fn apply_global_effect(&mut self, effect: &GlobalEffect, strips: &mut [PixelStrip], t: f32, beat: f64) {
         match effect.kind.as_str() {
             "Solid" => {
                 // Use EXACT same color reading as masks
@@ -797,7 +877,8 @@ impl LightingEngine {
                 }
             }
             "Rainbow" => {
-                let speed = effect.params.get("speed").and_then(|v| v.as_f64()).unwrap_or(0.2) as f32;
+                let base_speed = effect.params.get("speed").and_then(|v| v.as_f64()).unwrap_or(0.2) as f32;
+                let speed = apply_lfo_modulation(base_speed, &effect.params, "speed", t, beat);
                 let hue = (t * speed * self.speed).fract();
                 let c = hsv_to_rgb(hue, 1.0, 1.0);
                 for s in strips.iter_mut() {
@@ -829,16 +910,6 @@ impl LightingEngine {
                 // Clamp to ensure valid range
                 let intensity = intensity.clamp(0.0, 1.0);
 
-                // Debug logging (only occasionally)
-                static mut LAST_FLASH_LOG: f32 = 0.0;
-                unsafe {
-                    if t - LAST_FLASH_LOG > 1.0 {
-                        println!("Flash: beat={:.2}, phase={:.3}, intensity={:.3}, color={:?}, decay={}",
-                                 beat, phase, intensity, color, decay);
-                        LAST_FLASH_LOG = t;
-                    }
-                }
-
                 // Always apply the color with intensity - don't black out
                 // This prevents the "crash to black" issue
                 for s in strips.iter_mut() {
@@ -850,6 +921,64 @@ impl LightingEngine {
                         s.data[i] = [r, g, b];
                     }
                 }
+            }
+            "Sparkle" => {
+                let density = effect.params.get("density").and_then(|v| v.as_f64()).unwrap_or(0.05) as f32;
+                let life = effect.params.get("life").and_then(|v| v.as_f64()).unwrap_or(0.2) as f32;
+                let decay = effect.params.get("decay").and_then(|v| v.as_f64()).unwrap_or(5.0);
+                let color = effect.params.get("color").and_then(|v| {
+                    let arr = v.as_array()?;
+                    Some([arr.get(0)?.as_u64()? as u8, arr.get(1)?.as_u64()? as u8, arr.get(2)?.as_u64()? as u8])
+                }).unwrap_or([255, 255, 255]);
+
+                const MAX_SPARKLES: usize = 500;
+
+                // Spawn new sparkles
+                if self.sparkle_states.len() < MAX_SPARKLES {
+                    for strip in strips.iter() {
+                        let pixel_count = strip.pixel_count.min(strip.data.len());
+                        for i in 0..pixel_count {
+                            if self.sparkle_states.len() >= MAX_SPARKLES {
+                                break;
+                            }
+                            if rand::random::<f32>() < density {
+                                self.sparkle_states.push(SparklePixel {
+                                    strip_id: strip.id,
+                                    pixel_index: i,
+                                    birth_time: t,
+                                    color,
+                                });
+                            }
+                        }
+                    }
+                }
+
+                // Render and cleanup sparkles
+                self.sparkle_states.retain(|sparkle| {
+                    let age = t - sparkle.birth_time;
+                    if age > life {
+                        return false;
+                    }
+
+                    if let Some(strip) = strips.iter_mut().find(|s| s.id == sparkle.strip_id) {
+                        if sparkle.pixel_index < strip.data.len() {
+                            let progress = age / life;
+                            let intensity = (1.0 - progress).powf(decay as f32).clamp(0.0, 1.0);
+
+                            let r = (sparkle.color[0] as f32 * intensity) as u8;
+                            let g = (sparkle.color[1] as f32 * intensity) as u8;
+                            let b = (sparkle.color[2] as f32 * intensity) as u8;
+
+                            strip.data[sparkle.pixel_index] = [
+                                strip.data[sparkle.pixel_index][0].saturating_add(r),
+                                strip.data[sparkle.pixel_index][1].saturating_add(g),
+                                strip.data[sparkle.pixel_index][2].saturating_add(b),
+                            ];
+                        }
+                    }
+
+                    true
+                });
             }
             _ => {}
         }
@@ -873,4 +1002,67 @@ pub fn hsv_to_rgb(h: f32, s: f32, v: f32) -> [u8; 3] {
     };
     
     [(r * 255.0) as u8, (g * 255.0) as u8, (b * 255.0) as u8]
+}
+
+/// Apply LFO modulation to a parameter value
+fn apply_lfo_modulation(
+    base_value: f32,
+    params: &std::collections::HashMap<String, serde_json::Value>,
+    param_name: &str,
+    t: f32,
+    beat: f64,
+) -> f32 {
+    let lfo_key = |suffix: &str| format!("{}_lfo_{}", param_name, suffix);
+
+    let enabled = params.get(&lfo_key("enabled"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    if !enabled {
+        return base_value;
+    }
+
+    let depth = params.get(&lfo_key("depth"))
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.5) as f32;
+
+    let waveform = params.get(&lfo_key("waveform"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("sine");
+
+    let is_sync = params.get(&lfo_key("sync"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    let phase = if is_sync {
+        let rate_str = params.get(&lfo_key("rate"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("1/4");
+
+        let divisor = match rate_str {
+            "4 Bar" => 16.0, "2 Bar" => 8.0, "1 Bar" => 4.0,
+            "1/2" => 2.0, "1/4" => 1.0, "1/8" => 0.5,
+            _ => 1.0,
+        };
+
+        (beat / divisor).fract() as f32
+    } else {
+        let hz = params.get(&lfo_key("hz"))
+            .and_then(|v| v.as_f64())
+            .unwrap_or(1.0) as f32;
+        (t * hz).fract()
+    };
+
+    let wave_value = match waveform {
+        "sine" => (phase * std::f32::consts::TAU).sin(),
+        "triangle" => {
+            let tri = if phase < 0.5 { phase * 2.0 } else { 2.0 - phase * 2.0 };
+            tri * 2.0 - 1.0
+        },
+        "sawtooth" => phase * 2.0 - 1.0,
+        _ => 0.0,
+    };
+
+    let modulation = wave_value * depth;
+    base_value * (1.0 + modulation)
 }

@@ -7,6 +7,8 @@ use eframe::egui;
 use model::{AppState, PixelStrip, Mask};
 use engine::LightingEngine;
 use std::fs;
+use std::process::Command;
+use std::path::{Path, PathBuf};
 
 // View Transform State
 struct ViewState {
@@ -68,19 +70,33 @@ struct MyApp {
 impl Default for MyApp {
     fn default() -> Self {
         let mut state = AppState::default();
-        
-        if let Ok(content) = fs::read_to_string("lighting_config.json") {
-            if let Ok(loaded) = serde_json::from_str::<AppState>(&content) {
-                state = loaded;
+
+        // Load config from user config path with migration from local file if present
+        let cfg_path = user_config_path();
+        if cfg_path.exists() {
+            if let Ok(content) = fs::read_to_string(&cfg_path) {
+                if let Ok(loaded) = serde_json::from_str::<AppState>(&content) {
+                    state = loaded;
+                }
+            }
+        } else if Path::new("lighting_config.json").exists() {
+            // Migrate local config into user config location
+            if let Ok(content) = fs::read_to_string("lighting_config.json") {
+                if let Ok(loaded) = serde_json::from_str::<AppState>(&content) {
+                    state = loaded;
+                    // Best-effort write to new location
+                    let _ = ensure_parent_dir(&cfg_path).and_then(|_| fs::write(&cfg_path, content));
+                }
             }
         } else {
-             state.strips.push(PixelStrip::default());
-             state.masks.push(model::Mask {
+            // Seed some defaults if no config exists
+            state.strips.push(PixelStrip::default());
+            state.masks.push(model::Mask {
                 id: 1,
                 mask_type: "scanner".into(),
                 x: 0.5,
                 y: 0.5,
-                params: std::collections::HashMap::new(), 
+                params: std::collections::HashMap::new(),
             });
         }
 
@@ -103,13 +119,103 @@ impl Default for MyApp {
 impl MyApp {
     fn save_state(&self) {
         if let Ok(json) = serde_json::to_string_pretty(&self.state) {
-            let _ = fs::write("lighting_config.json", json);
+            let path = user_config_path();
+            if ensure_parent_dir(&path).is_ok() {
+                let _ = fs::write(path, json);
+            }
         }
+    }
+}
+
+fn ensure_parent_dir(path: &Path) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    Ok(())
+}
+
+fn user_config_path() -> PathBuf {
+    // Cross-platform-ish config path
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(home) = home::home_dir() {
+            return home
+                .join("Library")
+                .join("Application Support")
+                .join("Lightspeed")
+                .join("lighting_config.json");
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(base) = std::env::var_os("APPDATA") {
+            return PathBuf::from(base)
+                .join("Lightspeed")
+                .join("lighting_config.json");
+        }
+    }
+
+    // Linux / fallback: XDG or ~/.config
+    if let Ok(base) = std::env::var("XDG_CONFIG_HOME") {
+        PathBuf::from(base)
+            .join("lightspeed")
+            .join("lighting_config.json")
+    } else if let Some(home) = home::home_dir() {
+        home.join(".config").join("lightspeed").join("lighting_config.json")
+    } else {
+        // Last resort: current directory
+        PathBuf::from("lighting_config.json")
+    }
+}
+
+fn reveal_in_file_manager(path: &Path) {
+    // Prefer revealing the file; if not present yet, open the folder
+    let target = if path.exists() { path.to_path_buf() } else { path.parent().unwrap_or(Path::new(".")).to_path_buf() };
+
+    #[cfg(target_os = "macos")]
+    {
+        // On macOS, use `open -R` to reveal the file (or just open the directory)
+        let _ = if target.is_file() {
+            Command::new("open").args(["-R", &target.to_string_lossy()]).spawn()
+        } else {
+            Command::new("open").arg(&target).spawn()
+        };
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        let _ = if target.is_file() {
+            Command::new("explorer").arg("/select,").arg(&target).spawn()
+        } else {
+            Command::new("explorer").arg(&target).spawn()
+        };
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        // On Linux/Unix, open the containing folder via xdg-open
+        let dir = if target.is_dir() { target } else { target.parent().unwrap_or(Path::new(".")).to_path_buf() };
+        let _ = Command::new("xdg-open").arg(&dir).spawn();
     }
 }
 
 impl eframe::App for MyApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Menu Bar
+        egui::TopBottomPanel::top("menu_bar").show(ctx, |ui| {
+            egui::menu::bar(ui, |ui| {
+                ui.menu_button("File", |ui| {
+                    if ui.button("Reveal Config in Finder").clicked() {
+                        let p = user_config_path();
+                        reveal_in_file_manager(&p);
+                        self.status = "Opened config location".into();
+                        ui.close_menu();
+                    }
+                });
+            });
+        });
         
         // Update Loop (Physics/Networking)
         self.engine.update(&mut self.state);
@@ -220,12 +326,12 @@ impl eframe::App for MyApp {
                                 ui.collapsing(format!("Strip::{}", s.id), |ui| {
                                     ui.horizontal(|ui| {
                                         ui.label("Position:");
-                                        ui.add(egui::Slider::new(&mut s.x, 0.0..=1.0).text("X"));
-                                        ui.add(egui::Slider::new(&mut s.y, 0.0..=1.0).text("Y"));
+                                        ui.add(egui::DragValue::new(&mut s.x).speed(0.01).prefix("X: "));
+                                        ui.add(egui::DragValue::new(&mut s.y).speed(0.01).prefix("Y: "));
                                     });
                                     ui.horizontal(|ui| {
-                                         ui.label("Rotation:");
-                                         ui.add(egui::Slider::new(&mut s.rotation, 0.0..=6.28));
+                                        ui.label("Direction:");
+                                        ui.checkbox(&mut s.flipped, "Flip 180°");
                                     });
                                     ui.horizontal(|ui| {
                                         ui.label("Config:");
@@ -331,6 +437,7 @@ impl eframe::App for MyApp {
                                                     ui.selectable_value(&mut ge.kind, "Rainbow".into(), "Rainbow");
                                                     ui.selectable_value(&mut ge.kind, "Solid".into(), "Solid");
                                                     ui.selectable_value(&mut ge.kind, "Flash".into(), "Flash");
+                                                    ui.selectable_value(&mut ge.kind, "Sparkle".into(), "Sparkle");
                                                 });
                                         });
                                         if ge.kind == "Solid" {
@@ -370,11 +477,37 @@ impl eframe::App for MyApp {
                                             if ui.add(egui::Slider::new(&mut decay, 1.0..=20.0).text("Decay (Sharpness)")).changed() {
                                                 ge.params.insert("decay".into(), decay.into());
                                             }
+                                        } else if ge.kind == "Sparkle" {
+                                            // Sparkle UI
+                                            // Color
+                                            ui.horizontal(|ui| {
+                                                ui.label("Color:");
+                                                let mut color = ge.params.get("color").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or([255u8,255,255]);
+                                                if color_picker(ui, &mut color) {
+                                                    ge.params.insert("color".into(), serde_json::json!([color[0], color[1], color[2]]));
+                                                }
+                                            });
+
+                                            let mut density = ge.params.get("density").and_then(|v| v.as_f64()).unwrap_or(0.05);
+                                            if ui.add(egui::Slider::new(&mut density, 0.001..=0.2).text("Density")).changed() {
+                                                ge.params.insert("density".into(), density.into());
+                                            }
+
+                                            let mut life = ge.params.get("life").and_then(|v| v.as_f64()).unwrap_or(0.2);
+                                            if ui.add(egui::Slider::new(&mut life, 0.05..=2.0).text("Life (seconds)")).changed() {
+                                                ge.params.insert("life".into(), life.into());
+                                            }
+
+                                            let mut decay = ge.params.get("decay").and_then(|v| v.as_f64()).unwrap_or(5.0);
+                                            if ui.add(egui::Slider::new(&mut decay, 1.0..=20.0).text("Decay")).changed() {
+                                                ge.params.insert("decay".into(), decay.into());
+                                            }
                                         } else {
                                             let mut speed = ge.params.get("speed").and_then(|v| v.as_f64()).unwrap_or(0.2);
                                             if ui.add(egui::Slider::new(&mut speed, 0.05..=2.0).text("Speed")).changed() {
                                                 ge.params.insert("speed".into(), speed.into());
                                             }
+                                            lfo_controls(ui, &mut ge.params, "speed", format!("speed_lfo_{}", scene.id));
                                         }
                                     }
                                 } else {
@@ -396,6 +529,15 @@ impl eframe::App for MyApp {
                                                     let mut m = Mask { id: rand::random(), mask_type: "radial".into(), x: 0.5, y: 0.5, params: std::collections::HashMap::new() };
                                                     m.params.insert("radius".into(), 0.2.into());
                                                     m.params.insert("color".into(), serde_json::json!([255, 0, 0]));
+                                                    scene.masks.push(m);
+                                                }
+                                                if ui.selectable_label(false, "Burst").clicked() {
+                                                    let mut m = Mask { id: rand::random(), mask_type: "burst".into(), x: 0.5, y: 0.5, params: std::collections::HashMap::new() };
+                                                    m.params.insert("base_radius".into(), 0.1.into());
+                                                    m.params.insert("max_radius".into(), 0.5.into());
+                                                    m.params.insert("sensitivity".into(), 0.5.into());
+                                                    m.params.insert("decay".into(), 0.05.into());
+                                                    m.params.insert("color".into(), serde_json::json!([255, 100, 0]));
                                                     scene.masks.push(m);
                                                 }
                                             });
@@ -423,10 +565,16 @@ impl eframe::App for MyApp {
                                             m.params.insert("width".into(), w.into());
                                             needs_save = true;
                                         }
+                                        if lfo_controls(ui, &mut m.params, "width", format!("width_lfo_{}", m.id)) {
+                                            needs_save = true;
+                                        }
                                         // Height
                                         let mut h = m.params.get("height").and_then(|v| v.as_f64()).unwrap_or(0.3) as f32;
                                         if ui.add(egui::Slider::new(&mut h, 0.0..=50.0).text("Height")).changed() {
                                             m.params.insert("height".into(), h.into());
+                                            needs_save = true;
+                                        }
+                                        if lfo_controls(ui, &mut m.params, "height", format!("height_lfo_{}", m.id)) {
                                             needs_save = true;
                                         }
                                         
@@ -453,6 +601,33 @@ impl eframe::App for MyApp {
                                         let mut r = m.params.get("radius").and_then(|v| v.as_f64()).unwrap_or(0.2) as f32;
                                         if ui.add(egui::Slider::new(&mut r, 0.0..=5.0).text("Radius")).changed() {
                                             m.params.insert("radius".into(), r.into());
+                                            needs_save = true;
+                                        }
+                                        if lfo_controls(ui, &mut m.params, "radius", format!("radius_lfo_{}", m.id)) {
+                                            needs_save = true;
+                                        }
+                                    } else if m.mask_type == "burst" {
+                                        let mut base_r = m.params.get("base_radius").and_then(|v| v.as_f64()).unwrap_or(0.1) as f32;
+                                        if ui.add(egui::Slider::new(&mut base_r, 0.0..=2.0).text("Base Radius")).changed() {
+                                            m.params.insert("base_radius".into(), base_r.into());
+                                            needs_save = true;
+                                        }
+
+                                        let mut max_r = m.params.get("max_radius").and_then(|v| v.as_f64()).unwrap_or(0.5) as f32;
+                                        if ui.add(egui::Slider::new(&mut max_r, 0.0..=5.0).text("Max Radius")).changed() {
+                                            m.params.insert("max_radius".into(), max_r.into());
+                                            needs_save = true;
+                                        }
+
+                                        let mut sens = m.params.get("sensitivity").and_then(|v| v.as_f64()).unwrap_or(0.5) as f32;
+                                        if ui.add(egui::Slider::new(&mut sens, 0.0..=1.0).text("Sensitivity")).changed() {
+                                            m.params.insert("sensitivity".into(), sens.into());
+                                            needs_save = true;
+                                        }
+
+                                        let mut decay = m.params.get("decay").and_then(|v| v.as_f64()).unwrap_or(0.05) as f32;
+                                        if ui.add(egui::Slider::new(&mut decay, 0.01..=0.5).text("Decay Speed")).changed() {
+                                            m.params.insert("decay".into(), decay.into());
                                             needs_save = true;
                                         }
                                     }
@@ -634,6 +809,9 @@ impl eframe::App for MyApp {
                                                                 needs_save = true;
                                                             }
                                                         });
+                                                        if lfo_controls(ui, &mut m.params, "bar_width", format!("barwidth_lfo_{}", m.id)) {
+                                                            needs_save = true;
+                                                        }
                                                 } else {
                                                     let mut speed = m.params.get("speed").and_then(|v| v.as_f64()).unwrap_or(1.0);
                                                     if ui.add(egui::Slider::new(&mut speed, 0.1..=5.0).text("Speed")).changed() {
@@ -686,8 +864,9 @@ impl eframe::App for MyApp {
                         // End point
                         if s.pixel_count > 1 {
                             let len = (s.pixel_count - 1) as f32 * s.spacing;
-                            let tail_x = s.x + len * s.rotation.cos();
-                            let tail_y = s.y + len * s.rotation.sin();
+                            // Strip always extends to Right
+                            let tail_x = s.x + len;
+                            let tail_y = s.y;
                             min_x = min_x.min(tail_x);
                             min_y = min_y.min(tail_y);
                             max_x = max_x.max(tail_x);
@@ -1222,8 +1401,9 @@ impl eframe::App for MyApp {
                     
                      if s.pixel_count > 1 {
                         let len = (s.pixel_count - 1) as f32 * s.spacing;
-                        let tail_x = s.x + len * s.rotation.cos();
-                        let tail_y = s.y + len * s.rotation.sin();
+                        // Strip always extends Right
+                        let tail_x = s.x + len;
+                        let tail_y = s.y;
                         b_min_x = b_min_x.min(tail_x);
                         b_min_y = b_min_y.min(tail_y);
                         b_max_x = b_max_x.max(tail_x);
@@ -1263,8 +1443,8 @@ impl eframe::App for MyApp {
                     // Draw Line of Pixels representation
                     if s.pixel_count > 0 {
                         let _spacing = s.spacing;
-                        let angle = s.rotation.to_radians();
-                        let _dir = egui::vec2(angle.cos(), angle.sin());
+                        // let angle = s.rotation.to_radians(); -> Removed
+                        // let _dir = egui::vec2(angle.cos(), angle.sin());
                         
                         // We actually draw the pixels in the Engine loop usually, 
                         // but here we can draw a "ghost" line or the pixels themselves if we have data.
@@ -1274,12 +1454,15 @@ impl eframe::App for MyApp {
                     // Draw pixels based on simulation data...
                     for i in 0..s.pixel_count {
                         // Calculate world pos of pixel i
-                        let angle = s.rotation.to_radians();
-                        // Note: In engine we use glam, here we use simple math or just replicate
-                        let off_x = (i as f32 * s.spacing) * angle.cos();
-                        let off_y = (i as f32 * s.spacing) * angle.sin();
-                        let px_world = s.x + off_x;
-                        let py_world = s.y + off_y;
+                        // Calculate world pos of pixel i
+                        // Reverse in place
+                        let effective_offset = if s.flipped {
+                             ((s.pixel_count - 1).saturating_sub(i)) as f32 * s.spacing
+                        } else {
+                             i as f32 * s.spacing
+                        };
+                        let px_world = s.x + effective_offset;
+                        let py_world = s.y;
 
                         let px_screen = to_screen(px_world, py_world, &self.view);
 
@@ -1473,8 +1656,22 @@ impl eframe::App for MyApp {
                          "radial" => {
                              let r = m.params.get("radius").and_then(|v| v.as_f64()).unwrap_or(0.1) as f32;
                              let radius_screen = r * rect.width() * self.view.scale; // Width as basis
-                             
+
                              painter.circle(pos, radius_screen, color, egui::Stroke::new(2.0, stroke_color));
+                         },
+                         "burst" => {
+                             let base_r = m.params.get("base_radius").and_then(|v| v.as_f64()).unwrap_or(0.1) as f32;
+                             let max_r = m.params.get("max_radius").and_then(|v| v.as_f64()).unwrap_or(0.5) as f32;
+
+                             // Draw base radius
+                             let radius_screen = base_r * rect.width() * self.view.scale;
+                             painter.circle(pos, radius_screen, color, egui::Stroke::new(2.0, stroke_color));
+
+                             // Draw max radius (dotted)
+                             let max_radius_screen = max_r * rect.width() * self.view.scale;
+                             painter.circle(pos, max_radius_screen, egui::Color32::TRANSPARENT,
+                                 egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(
+                                     stroke_color.r(), stroke_color.g(), stroke_color.b(), 100)));
                          },
                          _ => {}
                     }
@@ -1499,9 +1696,113 @@ fn color_picker(ui: &mut egui::Ui, rgb: &mut [u8; 3]) -> bool {
     let mut arr = [rgb[0], rgb[1], rgb[2]];
     let resp = ui.color_edit_button_srgb(&mut arr);
     if resp.changed() {
-        println!("Color picker changed: [{}, {}, {}] -> [{}, {}, {}]",
-                 rgb[0], rgb[1], rgb[2], arr[0], arr[1], arr[2]);
         *rgb = arr;
         true
     } else { false }
+}
+
+/// Renders LFO controls for a given parameter
+/// Returns true if any value changed
+fn lfo_controls(
+    ui: &mut egui::Ui,
+    params: &mut std::collections::HashMap<String, serde_json::Value>,
+    param_name: &str,
+    id_source: impl std::hash::Hash + std::fmt::Debug,
+) -> bool {
+    let lfo_key = |suffix: &str| format!("{}_lfo_{}", param_name, suffix);
+    let mut changed = false;
+
+    let mut enabled = params.get(&lfo_key("enabled"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    ui.horizontal(|ui| {
+        if ui.checkbox(&mut enabled, "LFO").changed() {
+            params.insert(lfo_key("enabled"), enabled.into());
+            changed = true;
+        }
+
+        if !enabled {
+            return;
+        }
+
+        let mut depth = params.get(&lfo_key("depth"))
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.5);
+        if ui.add(egui::Slider::new(&mut depth, 0.0..=1.0).text("±%")).changed() {
+            params.insert(lfo_key("depth"), depth.into());
+            changed = true;
+        }
+
+        let mut waveform = params.get(&lfo_key("waveform"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("sine")
+            .to_string();
+
+        egui::ComboBox::from_id_source(format!("{:?}_wave", id_source))
+            .selected_text(&waveform)
+            .show_ui(ui, |ui| {
+                if ui.selectable_label(waveform == "sine", "Sine").clicked() {
+                    waveform = "sine".into();
+                    changed = true;
+                }
+                if ui.selectable_label(waveform == "triangle", "Triangle").clicked() {
+                    waveform = "triangle".into();
+                    changed = true;
+                }
+                if ui.selectable_label(waveform == "sawtooth", "Sawtooth").clicked() {
+                    waveform = "sawtooth".into();
+                    changed = true;
+                }
+            });
+
+        if changed {
+            params.insert(lfo_key("waveform"), serde_json::json!(waveform));
+        }
+    });
+
+    if enabled {
+        ui.horizontal(|ui| {
+            let mut is_sync = params.get(&lfo_key("sync"))
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+
+            if ui.checkbox(&mut is_sync, "Sync").changed() {
+                params.insert(lfo_key("sync"), is_sync.into());
+                changed = true;
+            }
+
+            if is_sync {
+                let mut rate = params.get(&lfo_key("rate"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("1/4")
+                    .to_string();
+
+                egui::ComboBox::from_id_source(format!("{:?}_rate", id_source))
+                    .selected_text(&rate)
+                    .show_ui(ui, |ui| {
+                        for r in ["4 Bar", "2 Bar", "1 Bar", "1/2", "1/4", "1/8"] {
+                            if ui.selectable_label(rate == r, r).clicked() {
+                                rate = r.into();
+                                changed = true;
+                            }
+                        }
+                    });
+
+                if changed {
+                    params.insert(lfo_key("rate"), serde_json::json!(rate));
+                }
+            } else {
+                let mut hz = params.get(&lfo_key("hz"))
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(1.0);
+                if ui.add(egui::Slider::new(&mut hz, 0.1..=10.0).text("Hz")).changed() {
+                    params.insert(lfo_key("hz"), hz.into());
+                    changed = true;
+                }
+            }
+        });
+    }
+
+    changed
 }

@@ -32,7 +32,8 @@ pub struct PixelStrip {
     pub x: f32, // Normalized 0..1
     pub y: f32, // Normalized 0..1
     pub spacing: f32, // Relative spacing 0..1
-    pub rotation: f32, // Radians
+    #[serde(default)]
+    pub flipped: bool, // true = 180 deg (Left), false = 0 deg (Right)
     #[serde(default = "default_color_order")]
     pub color_order: String, // "RGB", "GRB", "BGR"
     #[serde(skip)]
@@ -53,7 +54,7 @@ impl Default for PixelStrip {
             x: 0.5,
             y: 0.5,
             spacing: 0.05,
-            rotation: 0.0,
+            flipped: false,
             color_order: "RGB".to_string(),
             data: vec![[0, 0, 0]; 50],
         }

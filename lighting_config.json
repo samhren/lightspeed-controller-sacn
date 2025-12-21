@@ -5,10 +5,10 @@
       "universe": 1,
       "start_channel": 1,
       "pixel_count": 129,
-      "x": 0.66231626,
-      "y": 0.6,
+      "x": 0.0,
+      "y": 5.0,
       "spacing": 0.05,
-      "rotation": 0.0,
+      "flipped": true,
       "color_order": "RGB"
     },
     {
@@ -16,10 +16,10 @@
       "universe": 2,
       "start_channel": 1,
       "pixel_count": 129,
-      "x": 0.66231626,
-      "y": 0.5,
+      "x": 0.0,
+      "y": 4.5,
       "spacing": 0.05,
-      "rotation": 0.0,
+      "flipped": true,
       "color_order": "RGB"
     },
     {
@@ -27,10 +27,10 @@
       "universe": 3,
       "start_channel": 1,
       "pixel_count": 129,
-      "x": 0.66231626,
-      "y": 0.4,
+      "x": 0.0,
+      "y": 4.0,
       "spacing": 0.05,
-      "rotation": 0.0,
+      "flipped": true,
       "color_order": "RGB"
     },
     {
@@ -38,10 +38,10 @@
       "universe": 4,
       "start_channel": 1,
       "pixel_count": 129,
-      "x": 0.66231626,
-      "y": 0.3,
+      "x": 0.0,
+      "y": 3.5,
       "spacing": 0.05,
-      "rotation": 0.0,
+      "flipped": true,
       "color_order": "RGB"
     },
     {
@@ -49,21 +49,131 @@
       "universe": 5,
       "start_channel": 1,
       "pixel_count": 129,
-      "x": 0.66,
-      "y": 0.1,
+      "x": 0.0,
+      "y": 3.0,
       "spacing": 0.05,
-      "rotation": 0.0,
+      "flipped": true,
       "color_order": "RGB"
     },
     {
-      "id": 17577756270169621131,
+      "id": 6,
       "universe": 6,
       "start_channel": 1,
       "pixel_count": 129,
-      "x": 0.66,
-      "y": 0.2,
+      "x": 0.0,
+      "y": 2.5,
       "spacing": 0.05,
-      "rotation": 0.0,
+      "flipped": true,
+      "color_order": "RGB"
+    },
+    {
+      "id": 7,
+      "universe": 7,
+      "start_channel": 1,
+      "pixel_count": 98,
+      "x": 5.365662,
+      "y": 1.0,
+      "spacing": 0.05,
+      "flipped": true,
+      "color_order": "RGB"
+    },
+    {
+      "id": 8,
+      "universe": 8,
+      "start_channel": 1,
+      "pixel_count": 160,
+      "x": -2.6265433,
+      "y": 1.0,
+      "spacing": 0.05,
+      "flipped": false,
+      "color_order": "RGB"
+    },
+    {
+      "id": 9,
+      "universe": 9,
+      "start_channel": 1,
+      "pixel_count": 100,
+      "x": 5.365662,
+      "y": 0.5,
+      "spacing": 0.05,
+      "flipped": true,
+      "color_order": "RGB"
+    },
+    {
+      "id": 10,
+      "universe": 10,
+      "start_channel": 1,
+      "pixel_count": 160,
+      "x": -2.6265433,
+      "y": 0.5,
+      "spacing": 0.05,
+      "flipped": false,
+      "color_order": "RGB"
+    },
+    {
+      "id": 11,
+      "universe": 11,
+      "start_channel": 1,
+      "pixel_count": 100,
+      "x": 5.365662,
+      "y": 0.0,
+      "spacing": 0.05,
+      "flipped": true,
+      "color_order": "RGB"
+    },
+    {
+      "id": 12,
+      "universe": 12,
+      "start_channel": 1,
+      "pixel_count": 160,
+      "x": -2.6265433,
+      "y": 0.0,
+      "spacing": 0.05,
+      "flipped": false,
+      "color_order": "RGB"
+    },
+    {
+      "id": 13,
+      "universe": 13,
+      "start_channel": 1,
+      "pixel_count": 100,
+      "x": 5.365662,
+      "y": -0.5,
+      "spacing": 0.05,
+      "flipped": true,
+      "color_order": "RGB"
+    },
+    {
+      "id": 14,
+      "universe": 14,
+      "start_channel": 1,
+      "pixel_count": 160,
+      "x": -2.6265433,
+      "y": -0.5,
+      "spacing": 0.05,
+      "flipped": false,
+      "color_order": "RGB"
+    },
+    {
+      "id": 15,
+      "universe": 15,
+      "start_channel": 1,
+      "pixel_count": 100,
+      "x": 5.365662,
+      "y": -1.0,
+      "spacing": 0.05,
+      "flipped": true,
+      "color_order": "RGB"
+    },
+    {
+      "id": 16,
+      "universe": 16,
+      "start_channel": 1,
+      "pixel_count": 160,
+      "x": -2.6265433,
+      "y": -1.0,
+      "spacing": 0.05,
+      "flipped": false,
       "color_order": "RGB"
     }
   ],
@@ -80,54 +190,97 @@
           "x": 0.5,
           "y": 0.5,
           "params": {
+            "height": 0.3,
+            "speed": 1.0,
+            "width": 0.3,
             "color": [
               0,
               255,
               255
-            ],
-            "speed": 1.0,
-            "width": 0.3,
-            "height": 0.3
+            ]
           }
         }
       ],
       "global": {
-        "kind": "Solid",
+        "kind": "Rainbow",
         "params": {
-          "speed": 0.5,
+          "life": 0.32000000000000006,
+          "speed": 0.3700000000000001,
+          "speed_lfo_sync": true,
+          "decay": 2.3,
+          "speed_lfo_rate": "4 Bar",
+          "density": 0.03,
+          "speed_lfo_waveform": "sine",
           "color": [
             255,
             255,
             255
-          ]
+          ],
+          "speed_lfo_enabled": false
         }
       }
     },
     {
       "id": 3656755494743042563,
-      "name": "Blue Horizontal",
+      "name": "Red Blue Horizontal",
       "kind": "Masks",
       "masks": [
         {
           "id": 3022907389976888771,
           "mask_type": "scanner",
-          "x": 3.8626513,
-          "y": 0.19206883,
+          "x": 3.853046,
+          "y": 2.021811,
           "params": {
+            "height_lfo_waveform": "sine",
+            "width_lfo_waveform": "sine",
+            "width": 13.023442268371582,
+            "bar_width_lfo_rate": "4 Bar",
+            "height_lfo_enabled": false,
             "motion": "Linear",
+            "bar_width_lfo_waveform": "triangle",
+            "bar_width_lfo_depth": 1.0,
+            "width_lfo_enabled": false,
+            "bar_width_lfo_enabled": true,
+            "hard_edge": true,
+            "bar_width": 0.58,
+            "bar_width_lfo_sync": true,
+            "speed": 1.0,
             "rotation": 0.0,
-            "height": 1.705062747001648,
-            "hard_edge": false,
-            "sync": true,
+            "height": 6.297971248626709,
             "color": [
               0,
               15,
               255
             ],
             "rate": "1 Bar",
-            "speed": 1.0,
+            "sync": true
+          }
+        },
+        {
+          "id": 16634700053255479348,
+          "mask_type": "scanner",
+          "x": 3.8529751,
+          "y": 2.2304518,
+          "params": {
+            "sync": true,
+            "bar_width_lfo_waveform": "triangle",
+            "color": [
+              255,
+              0,
+              0
+            ],
+            "hard_edge": false,
+            "bar_width_lfo_sync": true,
             "bar_width": 0.58,
-            "width": 6.402764320373535
+            "bar_width_lfo_enabled": true,
+            "width": 13.01523780822754,
+            "bar_width_lfo_depth": 1.0,
+            "rotation": 180.0,
+            "speed": 1.0,
+            "rate": "1 Bar",
+            "motion": "Linear",
+            "bar_width_lfo_rate": "4 Bar",
+            "height": 6.790430545806885
           }
         }
       ],
@@ -141,14 +294,14 @@
       "global": {
         "kind": "Flash",
         "params": {
+          "speed": 0.2,
+          "rate": "1/4",
           "color": [
             255,
             255,
             255
           ],
-          "decay": 6.2,
-          "rate": "1/4",
-          "speed": 0.2
+          "decay": 1.0
         }
       }
     },
@@ -160,29 +313,79 @@
         {
           "id": 4722849681656745303,
           "mask_type": "scanner",
-          "x": 3.5102587,
-          "y": 0.35,
+          "x": 4.0784044,
+          "y": 1.9598113,
           "params": {
-            "height": 7.875619888305664,
-            "speed": 1.0,
+            "sync": true,
             "start_pos": "Right",
+            "width": 7.045283317565918,
             "color": [
               255,
               255,
               255
             ],
+            "hard_edge": false,
+            "speed": 1.0,
             "rate": "1 Bar",
+            "rotation": 90.0,
+            "height": 13.830557823181152,
+            "bar_width": 0.6900000000000001
+          }
+        }
+      ],
+      "global": null
+    },
+    {
+      "id": 12037065891021868092,
+      "name": "Diagonal Blue",
+      "kind": "Masks",
+      "masks": [
+        {
+          "id": 12085592433343533741,
+          "mask_type": "scanner",
+          "x": 3.4115117,
+          "y": 0.3440881,
+          "params": {
+            "rate": "1 Bar",
+            "color": [
+              0,
+              255,
+              255
+            ],
+            "rotation": 45.0,
+            "hard_edge": false,
+            "bar_width": 0.7,
+            "speed": 1.0,
             "sync": true,
-            "bar_width": 0.08,
-            "width": 0.5460519194602966,
-            "rotation": 90.0
+            "width": 11.260355949401855,
+            "height": 11.616992950439451
+          }
+        },
+        {
+          "id": 127900375136209296,
+          "mask_type": "scanner",
+          "x": 3.414527,
+          "y": 0.3453073,
+          "params": {
+            "height": 11.033242225646973,
+            "width": 11.659222602844238,
+            "speed": 1.0,
+            "color": [
+              0,
+              255,
+              255
+            ],
+            "sync": true,
+            "rotation": 135.0,
+            "bar_width": 0.7,
+            "rate": "1 Bar"
           }
         }
       ],
       "global": null
     }
   ],
-  "selected_scene_id": 6406027995859534812,
+  "selected_scene_id": 12037065891021868092,
   "network": {
     "use_multicast": false,
     "unicast_ip": "192.168.1.50",
@@ -190,5 +393,11 @@
   },
   "bind_address": null,
   "mode": "",
-  "effect": ""
+  "effect": "",
+  "audio": {
+    "latency_ms": 50.0,
+    "use_flywheel": true,
+    "hybrid_sync": true,
+    "sensitivity": 0.5
+  }
 }
