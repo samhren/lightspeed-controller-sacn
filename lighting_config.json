@@ -196,26 +196,26 @@
               255
             ],
             "width": 0.3,
-            "speed": 1.0,
-            "height": 0.3
+            "height": 0.3,
+            "speed": 1.0
           }
         }
       ],
       "global": {
         "kind": "Rainbow",
         "params": {
+          "life": 0.32000000000000006,
+          "speed_lfo_sync": true,
+          "density": 0.03,
+          "speed_lfo_waveform": "sine",
           "color": [
             255,
             255,
             255
           ],
-          "speed_lfo_waveform": "sine",
-          "life": 0.32000000000000006,
           "decay": 2.3,
-          "speed_lfo_rate": "4 Bar",
-          "density": 0.03,
-          "speed_lfo_sync": true,
           "speed_lfo_enabled": false,
+          "speed_lfo_rate": "4 Bar",
           "speed": 0.3700000000000001
         }
       },
@@ -234,29 +234,29 @@
           "x": 3.8338768,
           "y": 1.9364464,
           "params": {
-            "rotation": 0.0,
-            "motion": "Linear",
-            "bar_width_lfo_rate": "4 Bar",
-            "width_lfo_waveform": "sine",
-            "bar_width_lfo_enabled": true,
             "bar_width_lfo_sync": true,
-            "bar_width_lfo_waveform": "triangle",
-            "rate": "1 Bar",
-            "bar_width": 0.58,
-            "hard_edge": true,
+            "bar_width_lfo_rate": "4 Bar",
+            "bar_width_lfo_depth": 1.0,
+            "height_lfo_waveform": "sine",
             "color": [
               0,
               15,
               255
             ],
-            "height_lfo_enabled": false,
-            "width_lfo_enabled": false,
-            "bar_width_lfo_depth": 1.0,
-            "width": 13.04793930053711,
             "sync": true,
-            "height": 6.297968864440918,
+            "width_lfo_enabled": false,
+            "height_lfo_enabled": false,
+            "bar_width": 0.58,
+            "width": 13.04793930053711,
             "speed": 1.0,
-            "height_lfo_waveform": "sine"
+            "motion": "Linear",
+            "rotation": 0.0,
+            "bar_width_lfo_enabled": true,
+            "hard_edge": true,
+            "height": 6.297968864440918,
+            "width_lfo_waveform": "sine",
+            "bar_width_lfo_waveform": "triangle",
+            "rate": "1 Bar"
           }
         },
         {
@@ -265,25 +265,25 @@
           "x": 3.8529751,
           "y": 2.2304518,
           "params": {
-            "bar_width_lfo_rate": "4 Bar",
-            "bar_width": 0.58,
-            "rate": "1 Bar",
-            "rotation": 180.0,
-            "hard_edge": false,
+            "bar_width_lfo_waveform": "triangle",
             "color": [
               255,
               0,
               0
             ],
-            "bar_width_lfo_depth": 1.0,
-            "height": 6.790430545806885,
-            "bar_width_lfo_waveform": "triangle",
-            "width": 13.01523780822754,
-            "sync": true,
-            "motion": "Linear",
-            "speed": 1.0,
             "bar_width_lfo_enabled": true,
-            "bar_width_lfo_sync": true
+            "hard_edge": false,
+            "width": 13.01523780822754,
+            "height": 6.790430545806885,
+            "bar_width_lfo_sync": true,
+            "speed": 1.0,
+            "bar_width": 0.58,
+            "bar_width_lfo_depth": 1.0,
+            "motion": "Linear",
+            "rotation": 180.0,
+            "bar_width_lfo_rate": "4 Bar",
+            "sync": true,
+            "rate": "1 Bar"
           }
         }
       ],
@@ -300,14 +300,14 @@
       "global": {
         "kind": "Flash",
         "params": {
+          "rate": "1/4",
+          "decay": 1.0,
           "speed": 0.2,
           "color": [
             255,
             255,
             255
-          ],
-          "decay": 1.0,
-          "rate": "1/4"
+          ]
         }
       },
       "launchpad_btn": null,
@@ -325,20 +325,20 @@
           "x": 4.0784044,
           "y": 1.9598113,
           "params": {
-            "hard_edge": false,
-            "width": 7.045283317565918,
+            "rate": "1 Bar",
             "start_pos": "Right",
+            "speed": 1.0,
+            "width": 7.045283317565918,
             "color": [
               255,
               255,
               255
             ],
             "sync": true,
-            "speed": 1.0,
-            "height": 13.830557823181152,
-            "rate": "1 Bar",
             "bar_width": 0.6900000000000001,
-            "rotation": 90.0
+            "height": 13.830557823181152,
+            "rotation": 90.0,
+            "hard_edge": false
           }
         }
       ],
@@ -358,19 +358,19 @@
           "x": 3.4115117,
           "y": 0.3440881,
           "params": {
-            "sync": true,
-            "width": 11.260355949401855,
             "hard_edge": false,
-            "rotation": 45.0,
-            "bar_width": 0.7,
-            "rate": "1 Bar",
-            "speed": 1.0,
+            "width": 11.260355949401855,
             "color": [
               0,
               255,
               255
             ],
-            "height": 11.616992950439451
+            "height": 11.616992950439451,
+            "rotation": 45.0,
+            "sync": true,
+            "speed": 1.0,
+            "rate": "1 Bar",
+            "bar_width": 0.7
           }
         },
         {
@@ -379,18 +379,18 @@
           "x": 3.414527,
           "y": 0.3453073,
           "params": {
-            "speed": 1.0,
+            "rotation": 135.0,
+            "sync": true,
+            "width": 11.659222602844238,
             "height": 11.033242225646973,
             "color": [
               0,
               255,
               255
             ],
-            "bar_width": 0.7,
             "rate": "1 Bar",
-            "rotation": 135.0,
-            "width": 11.659222602844238,
-            "sync": true
+            "speed": 1.0,
+            "bar_width": 0.7
           }
         }
       ],
@@ -400,7 +400,7 @@
       "launchpad_color": 49
     }
   ],
-  "selected_scene_id": 3656755494743042563,
+  "selected_scene_id": 4460136836759193389,
   "network": {
     "use_multicast": false,
     "unicast_ip": "192.168.1.50",

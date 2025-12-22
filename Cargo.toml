@@ -21,3 +21,6 @@ home = "=0.5.9" # Pin to avoid edition2024
 pollster = "0.2" # For async blocking if needed
 rand = "0.8"
 midir = "0.10.3"
+rusqlite = { version = "0.32", features = ["bundled"] }
+rfd = "0.14"
+image = "0.24"

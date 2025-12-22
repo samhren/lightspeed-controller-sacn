@@ -5,14 +5,17 @@ mod engine;
 mod audio;
 mod scanner;
 mod midi;
+mod db;
 
 use eframe::egui;
 use model::{AppState, PixelStrip, Mask};
 use engine::LightingEngine;
+use db::Database;
 use std::fs;
 use std::process::Command;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Sender, Receiver};
+use std::time::{Duration, Instant};
 struct ViewState {
     offset: egui::Vec2,
     scale: f32,
@@ -40,20 +43,45 @@ impl Default for ViewState {
 }
 
 fn main() -> eframe::Result<()> {
-    env_logger::init(); 
+    env_logger::init();
+
+    // Load app icon
+    let icon_data = load_icon();
+
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_inner_size([1200.0, 800.0])
+        .with_drag_and_drop(true);
+
+    if let Some(icon) = icon_data {
+        viewport = viewport.with_icon(icon);
+    }
 
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1200.0, 800.0])
-            .with_drag_and_drop(true),
+        viewport,
         ..Default::default()
     };
-    
+
     eframe::run_native(
         "Lightspeed Controller",
         options,
         Box::new(|_cc| Box::new(MyApp::default())),
     )
+}
+
+fn load_icon() -> Option<egui::IconData> {
+    // Try to load the generated icon PNG
+    let icon_bytes = include_bytes!("../generated_icon.png");
+
+    // Decode the PNG
+    let image = image::load_from_memory(icon_bytes).ok()?;
+    let rgba = image.to_rgba8();
+    let (width, height) = rgba.dimensions();
+
+    Some(egui::IconData {
+        rgba: rgba.into_raw(),
+        width: width as u32,
+        height: height as u32,
+    })
 }
 
 struct MyApp {
@@ -66,7 +94,15 @@ struct MyApp {
     new_scene_open: bool,
     new_scene_name: String,
     new_scene_kind: String, // "Masks" or "Global"
-    last_saved_json: String,
+    // Database
+    db: Database,
+    last_change_time: Option<Instant>,
+    save_debounce: Duration,
+    // Import/Export UI state
+    import_dialog_open: bool,
+    import_merge_mode: bool,
+    import_file_path: Option<PathBuf>,
+    // MIDI
     midi_sender: Sender<midi::MidiCommand>,
     midi_receiver: Receiver<midi::MidiEvent>,
 }
@@ -74,38 +110,57 @@ struct MyApp {
 impl Default for MyApp {
     fn default() -> Self {
         let mut state = AppState::default();
+        let mut status = "Ready".to_owned();
 
-        // Load config from user config path with migration from local file if present
-        let cfg_path = user_config_path();
-        if cfg_path.exists() {
-            if let Ok(content) = fs::read_to_string(&cfg_path) {
-                if let Ok(loaded) = serde_json::from_str::<AppState>(&content) {
-                    state = loaded;
-                }
-            }
-        } else if Path::new("lighting_config.json").exists() {
-            // Migrate local config into user config location
-            if let Ok(content) = fs::read_to_string("lighting_config.json") {
-                if let Ok(loaded) = serde_json::from_str::<AppState>(&content) {
-                    state = loaded;
-                    // Best-effort write to new location
-                    let _ = ensure_parent_dir(&cfg_path).and_then(|_| fs::write(&cfg_path, content));
-                }
-            }
-        } else {
-            // Seed some defaults if no config exists
-            state.strips.push(PixelStrip::default());
-            state.masks.push(model::Mask {
-                id: 1,
-                mask_type: "scanner".into(),
-                x: 0.5,
-                y: 0.5,
-                params: std::collections::HashMap::new(),
-            });
+        // Open database
+        let db_path = user_db_path();
+        if let Err(e) = ensure_parent_dir(&db_path) {
+            eprintln!("Failed to create config directory: {}", e);
         }
 
-        // Initial autosave snapshot
-        let snapshot = serde_json::to_string_pretty(&state).unwrap_or_default();
+        let mut db = match Database::open(&db_path) {
+            Ok(db) => db,
+            Err(e) => {
+                eprintln!("Failed to open database: {}", e);
+                status = format!("Database error: {}", e);
+                // Seed default state if database fails
+                state.strips.push(PixelStrip::default());
+                state.masks.push(model::Mask {
+                    id: 1,
+                    mask_type: "scanner".into(),
+                    x: 0.5,
+                    y: 0.5,
+                    params: std::collections::HashMap::new(),
+                });
+
+                // Create a dummy database (will retry on next launch)
+                Database::open(&db_path).unwrap_or_else(|_| {
+                    panic!("Fatal: Cannot create database at {:?}", db_path)
+                })
+            }
+        };
+
+        // Load state from database
+        match db.load_state() {
+            Ok(loaded) => {
+                state = loaded;
+            }
+            Err(e) => {
+                eprintln!("Failed to load state from database: {}", e);
+                if status == "Ready" {
+                    status = format!("Load error: {}", e);
+                }
+                // Seed defaults if load fails
+                state.strips.push(PixelStrip::default());
+                state.masks.push(model::Mask {
+                    id: 1,
+                    mask_type: "scanner".into(),
+                    x: 0.5,
+                    y: 0.5,
+                    params: std::collections::HashMap::new(),
+                });
+            }
+        }
         
         // Init MIDI
         let (tx_event, rx_event) = std::sync::mpsc::channel();
@@ -130,12 +185,17 @@ impl Default for MyApp {
             state,
             engine: LightingEngine::new(),
             view: ViewState::default(),
-            status: "Ready".to_owned(),
+            status,
             is_first_frame: true,
             new_scene_open: false,
             new_scene_name: "New Scene".into(),
             new_scene_kind: "Masks".into(),
-            last_saved_json: snapshot,
+            db,
+            last_change_time: None,
+            save_debounce: Duration::from_secs(5),
+            import_dialog_open: false,
+            import_merge_mode: false,
+            import_file_path: None,
             midi_sender: tx_cmd,
             midi_receiver: rx_event,
         }
@@ -143,11 +203,91 @@ impl Default for MyApp {
 }
 
 impl MyApp {
-    fn save_state(&self) {
-        if let Ok(json) = serde_json::to_string_pretty(&self.state) {
-            let path = user_config_path();
-            if ensure_parent_dir(&path).is_ok() {
-                let _ = fs::write(path, json);
+    fn save_state(&mut self) {
+        match self.db.save_state(&self.state) {
+            Ok(_) => {
+                self.status = "Saved to database".into();
+                self.last_change_time = None; // Reset debounce timer
+            }
+            Err(e) => {
+                self.status = format!("Save failed: {}", e);
+                eprintln!("Database save error: {}", e);
+            }
+        }
+    }
+
+    fn mark_state_changed(&mut self) {
+        self.last_change_time = Some(Instant::now());
+    }
+
+    fn export_to_json(&mut self) {
+        // Use native file dialog to choose save location
+        if let Some(path) = rfd::FileDialog::new()
+            .set_file_name("lightspeed_export.json")
+            .add_filter("JSON", &["json"])
+            .save_file()
+        {
+            match self.db.export_to_json() {
+                Ok(json) => {
+                    match fs::write(&path, json) {
+                        Ok(_) => {
+                            self.status = format!("Exported to {}", path.display());
+                        }
+                        Err(e) => {
+                            self.status = format!("Export failed: {}", e);
+                            eprintln!("Failed to write export file: {}", e);
+                        }
+                    }
+                }
+                Err(e) => {
+                    self.status = format!("Export error: {}", e);
+                    eprintln!("Failed to export from database: {}", e);
+                }
+            }
+        }
+    }
+
+    fn import_from_json(&mut self) {
+        // Use native file dialog to choose file
+        if let Some(path) = rfd::FileDialog::new()
+            .add_filter("JSON", &["json"])
+            .pick_file()
+        {
+            self.import_file_path = Some(path);
+            self.import_dialog_open = true;
+        }
+    }
+
+    fn do_import(&mut self) {
+        if let Some(path) = &self.import_file_path {
+            match fs::read_to_string(path) {
+                Ok(json) => {
+                    match self.db.import_from_json(&json, self.import_merge_mode) {
+                        Ok(_) => {
+                            // Reload state from database
+                            match self.db.load_state() {
+                                Ok(state) => {
+                                    self.state = state;
+                                    self.status = "Import successful".into();
+                                    // Restart engine with new state
+                                    self.engine = LightingEngine::new();
+                                }
+                                Err(e) => {
+                                    self.status = format!("Failed to reload after import: {}", e);
+                                    eprintln!("Failed to reload state: {}", e);
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            self.status = format!("Import failed: {}", e);
+                            eprintln!("Import error: {}", e);
+                        }
+                    }
+                }
+                Err(e) => {
+                    self.status = format!("Failed to read file: {}", e);
+                    eprintln!("Failed to read import file: {}", e);
+                }
             }
         }
     }
@@ -192,6 +332,41 @@ fn user_config_path() -> PathBuf {
     } else {
         // Last resort: current directory
         PathBuf::from("lighting_config.json")
+    }
+}
+
+fn user_db_path() -> PathBuf {
+    // Cross-platform database path (same location as config but .db extension)
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(home) = home::home_dir() {
+            return home
+                .join("Library")
+                .join("Application Support")
+                .join("Lightspeed")
+                .join("lighting_config.db");
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(base) = std::env::var_os("APPDATA") {
+            return PathBuf::from(base)
+                .join("Lightspeed")
+                .join("lighting_config.db");
+        }
+    }
+
+    // Linux / fallback: XDG or ~/.config
+    if let Ok(base) = std::env::var("XDG_CONFIG_HOME") {
+        PathBuf::from(base)
+            .join("lightspeed")
+            .join("lighting_config.db")
+    } else if let Some(home) = home::home_dir() {
+        home.join(".config").join("lightspeed").join("lighting_config.db")
+    } else {
+        // Last resort: current directory
+        PathBuf::from("lighting_config.db")
     }
 }
 
@@ -247,13 +422,63 @@ impl eframe::App for MyApp {
             }
         }
 
+        // Import confirmation dialog
+        if self.import_dialog_open {
+            egui::Window::new("Import from JSON")
+                .collapsible(false)
+                .resizable(false)
+                .show(ctx, |ui| {
+                    ui.label("Import will update your current configuration.");
+                    ui.label("Make sure you have saved any changes first!");
+
+                    ui.separator();
+
+                    ui.horizontal(|ui| {
+                        ui.radio_value(&mut self.import_merge_mode, false, "Replace All");
+                        ui.radio_value(&mut self.import_merge_mode, true, "Merge (add scenes/strips)");
+                    });
+
+                    ui.separator();
+
+                    ui.horizontal(|ui| {
+                        if ui.button("Cancel").clicked() {
+                            self.import_dialog_open = false;
+                        }
+
+                        if ui.button("Import").clicked() {
+                            self.do_import();
+                            self.import_dialog_open = false;
+                        }
+                    });
+                });
+        }
+
         // Menu Bar
         egui::TopBottomPanel::top("menu_bar").show(ctx, |ui| {
 
             egui::menu::bar(ui, |ui| {
                 ui.menu_button("File", |ui| {
+                    if ui.button("Save Config").clicked() {
+                        self.save_state();
+                        ui.close_menu();
+                    }
+
+                    ui.separator();
+
+                    if ui.button("Export to JSON...").clicked() {
+                        self.export_to_json();
+                        ui.close_menu();
+                    }
+
+                    if ui.button("Import from JSON...").clicked() {
+                        self.import_from_json();
+                        ui.close_menu();
+                    }
+
+                    ui.separator();
+
                     if ui.button("Reveal Config in Finder").clicked() {
-                        let p = user_config_path();
+                        let p = user_db_path();
                         reveal_in_file_manager(&p);
                         self.status = "Opened config location".into();
                         ui.close_menu();
@@ -361,7 +586,7 @@ impl eframe::App for MyApp {
                                 let mut s = PixelStrip::default();
                                 s.id = rand::random();
                                 self.state.strips.push(s);
-                                self.save_state();
+                                self.mark_state_changed();
                             }
                         });
                         
@@ -958,11 +1183,11 @@ impl eframe::App for MyApp {
                         }
                         if let Some(i) = delete_scene_idx {
                             self.state.scenes.remove(i);
-                            self.save_state(); // Save after delete
+                            self.mark_state_changed();
                         }
-                        
+
                         if needs_save {
-                            self.save_state();
+                            self.mark_state_changed();
                         }
                     });
                 });
@@ -1511,7 +1736,7 @@ impl eframe::App for MyApp {
                 if response.drag_released() {
                     self.view.drag_id = None;
                     self.view.drag_type = DragType::None;
-                    self.save_state();
+                    self.mark_state_changed();
                 }
 
                 // RENDERING
@@ -1816,12 +2041,10 @@ impl eframe::App for MyApp {
             });
         });
         
-        // Auto-save configuration when state changes
-        if let Ok(current_json) = serde_json::to_string_pretty(&self.state) {
-            if current_json != self.last_saved_json {
-                let _ = fs::write("lighting_config.json", &current_json);
-                self.last_saved_json = current_json;
-                self.status = "Auto-saved".into();
+        // Debounced auto-save (saves 5 seconds after last change)
+        if let Some(last_change) = self.last_change_time {
+            if last_change.elapsed() >= self.save_debounce {
+                self.save_state();
             }
         }
 
