@@ -59,7 +59,7 @@ Lightspeed Controller is a professional-grade lighting control application desig
 ```bash
 # Clone the repository
 git clone https://github.com/samhren/lightspeed-controller-sacn.git
-cd Lights
+cd lightspeed-controller-sacn
 
 # Run in release mode for optimal performance
 cargo run --release
