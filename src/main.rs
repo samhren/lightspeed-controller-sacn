@@ -994,22 +994,29 @@ impl eframe::App for MyApp {
                             }
                         });
 
-                        // Category filter for main panel
-                        if !self.state.scenes.is_empty() {
-                            let mut categories: Vec<String> = self.state.scenes
+                        // Collect existing categories once and reuse everywhere
+                        let existing_categories: Vec<String> = if !self.state.scenes.is_empty() {
+                            let mut cats: Vec<String> = self.state.scenes
                                 .iter()
                                 .map(|s| s.category.clone())
                                 .collect::<std::collections::HashSet<_>>()
                                 .into_iter()
                                 .collect();
-                            categories.sort();
+                            cats.sort();
+                            cats
+                        } else {
+                            vec![]
+                        };
+
+                        // Filters for main panel
+                        if !self.state.scenes.is_empty() {
 
                             ui.horizontal_wrapped(|ui| {
                                 ui.label("Category:");
                                 if ui.selectable_label(self.main_scenes_category_filter.is_none(), "All").clicked() {
                                     self.main_scenes_category_filter = None;
                                 }
-                                for cat in &categories {
+                                for cat in &existing_categories {
                                     let is_selected = self.main_scenes_category_filter.as_ref() == Some(cat);
                                     if ui.selectable_label(is_selected, cat).clicked() {
                                         self.main_scenes_category_filter = Some(cat.clone());
@@ -1039,15 +1046,6 @@ impl eframe::App for MyApp {
                                 });
                                 ui.horizontal(|ui| {
                                     ui.label("Category:");
-                                    // Collect existing categories for suggestions
-                                    let mut existing_categories: Vec<String> = self.state.scenes
-                                        .iter()
-                                        .map(|s| s.category.clone())
-                                        .collect::<std::collections::HashSet<_>>()
-                                        .into_iter()
-                                        .collect();
-                                    existing_categories.sort();
-
                                     egui::ComboBox::from_id_source("new_scene_category")
                                         .selected_text(&self.new_scene_category)
                                         .show_ui(ui, |ui| {
@@ -1130,15 +1128,6 @@ impl eframe::App for MyApp {
 
                         // Collect strip info needed for UI (id, index)
                         let available_strips: Vec<(u64, usize)> = self.state.strips.iter().enumerate().map(|(i, s)| (s.id, i)).collect();
-
-                        // Collect existing categories for the ComboBox
-                        let mut existing_categories: Vec<String> = self.state.scenes
-                            .iter()
-                            .map(|s| s.category.clone())
-                            .collect::<std::collections::HashSet<_>>()
-                            .into_iter()
-                            .collect();
-                        existing_categories.sort();
 
                         for (si, scene) in self.state.scenes.iter_mut().enumerate() {
                             // Apply category filter
