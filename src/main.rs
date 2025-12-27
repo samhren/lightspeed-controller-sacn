@@ -125,6 +125,8 @@ struct MyApp {
     // MIDI
     midi_sender: Sender<midi::MidiCommand>,
     midi_receiver: Receiver<midi::MidiEvent>,
+    midi_connected: bool,
+    last_midi_detection: Option<Instant>,
     // Scene Reordering
     dragged_scene_id: Option<u64>,
 }
@@ -237,6 +239,8 @@ impl Default for MyApp {
             import_file_path: None,
             midi_sender: tx_cmd,
             midi_receiver: rx_event,
+            midi_connected: false,
+            last_midi_detection: None,
             dragged_scene_id: None,
         }
     }
@@ -452,6 +456,44 @@ impl eframe::App for MyApp {
             }
         });
 
+        // 1. Detection Logic (Runs on Main Thread)
+        let now = std::time::Instant::now();
+        let should_check = self.last_midi_detection
+            .map(|t| now.duration_since(t) > std::time::Duration::from_secs(2))
+            .unwrap_or(true);
+
+        if should_check {
+            self.last_midi_detection = Some(now);
+
+            if !self.midi_connected {
+                // DETECT
+                if let Some(payload) = midi::detect_launchpad() {
+                    println!("Launchpad detected on Main Thread! Handing off to worker...");
+                    let _ = self.midi_sender.send(midi::MidiCommand::Connect(Box::new(payload)));
+                    self.midi_connected = true; 
+                }
+            } else {
+                // WATCHDOG: Check if still connected
+                // We create a temporary input to check ports.
+                // This is lightweight enough to do every few seconds.
+                let is_present = if let Ok(mut watcher) = midir::MidiInput::new("Watchdog") {
+                    watcher.ignore(midir::Ignore::None);
+                    watcher.ports().iter().any(|p| {
+                        let name = watcher.port_name(p).unwrap_or_default();
+                        name.contains("Launchpad")
+                    })
+                } else {
+                    false 
+                };
+
+                if !is_present {
+                    println!("Watchdog: Launchpad disappeared from port list. Disconnecting...");
+                    let _ = self.midi_sender.send(midi::MidiCommand::Disconnect);
+                    self.midi_connected = false;
+                }
+            }
+        }
+
         // Handle MIDI Input
         while let Ok(event) = self.midi_receiver.try_recv() {
             match event {
@@ -469,6 +511,7 @@ impl eframe::App for MyApp {
                 }
                 midi::MidiEvent::Connected => {
                     println!("Launchpad connected! Refreshing button colors...");
+                    self.midi_connected = true;
                     // Clear all buttons
                     let _ = self.midi_sender.send(midi::MidiCommand::ClearAll);
                     // Resend all scene button colors
@@ -485,6 +528,8 @@ impl eframe::App for MyApp {
                 }
                 midi::MidiEvent::Disconnected => {
                     println!("Launchpad disconnected. Will retry connection...");
+                    self.midi_connected = false;
+                    self.last_midi_detection = Some(std::time::Instant::now()); // Delay retry slightly
                 }
             }
         }
