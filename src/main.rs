@@ -1715,11 +1715,19 @@ impl eframe::App for MyApp {
                                                     m.params.insert("color".into(), serde_json::json!([255, 100, 0]));
                                                     scene.masks.push(m);
                                                 }
+                                                if ui.selectable_label(false, "Orbit").clicked() {
+                                                    let mut m = Mask { id: rand::random(), mask_type: "orbit".into(), x: 0.5, y: 0.5, params: std::collections::HashMap::new() };
+                                                    m.params.insert("width".into(), 0.3.into());
+                                                    m.params.insert("height".into(), 0.3.into());
+                                                    m.params.insert("bar_width".into(), 0.1.into());
+                                                    m.params.insert("speed".into(), 1.0.into());
+                                                    m.params.insert("color".into(), serde_json::json!([255, 0, 255]));
+                                                    scene.masks.push(m);
+                                                }
                                             });
                                     });
 
                                     let mut delete_mask_idx = None;
-                                    let mut needs_save = false;
                                     for (idx, m) in scene.masks.iter_mut().enumerate() {
                                         ui.push_id(m.id, |ui| {
                                             ui.collapsing(format!("{} Mask::{}", m.mask_type, m.id), |ui| {
@@ -1783,8 +1791,29 @@ impl eframe::App for MyApp {
                                             m.params.insert("decay".into(), decay.into());
                                             needs_save = true;
                                         }
+                                    } else if m.mask_type == "orbit" {
+                                        // Hard Edge
+                                        let mut hard_edge = m.params.get("hard_edge").and_then(|v| v.as_bool()).unwrap_or(false);
+                                        if ui.checkbox(&mut hard_edge, "Hard Edge").changed() {
+                                            m.params.insert("hard_edge".into(), hard_edge.into());
+                                            needs_save = true;
+                                        }
+
+                                        // Constant Speed
+                                        let mut constant_speed = m.params.get("constant_speed").and_then(|v| v.as_bool()).unwrap_or(false);
+                                        if ui.checkbox(&mut constant_speed, "Constant Speed").on_hover_text("When enabled, bar moves at the same speed on all sides. Shorter sides finish early and pause until the next beat.").changed() {
+                                            m.params.insert("constant_speed".into(), constant_speed.into());
+                                            needs_save = true;
+                                        }
+
+                                        // Bar Width
+                                        let mut bw = m.params.get("bar_width").and_then(|v| v.as_f64()).unwrap_or(0.1) as f32;
+                                        if ui.add(egui::Slider::new(&mut bw, 0.01..=0.5).text("Bar Width")).changed() {
+                                            m.params.insert("bar_width".into(), bw.into());
+                                            needs_save = true;
+                                        }
                                     }
-                                    
+
                                     // Color
                                     ui.horizontal(|ui| {
                                         ui.label("Color:");
@@ -1972,14 +2001,51 @@ impl eframe::App for MyApp {
                                                     }
                                                 }
                                             });
+                                        } else if m.mask_type == "orbit" {
+                                            ui.vertical(|ui| {
+                                                let mut is_sync = m.params.get("sync").and_then(|v| v.as_bool()).unwrap_or(false);
+                                                if ui.checkbox(&mut is_sync, "Beat Sync").changed() {
+                                                    m.params.insert("sync".into(), is_sync.into());
+                                                    needs_save = true;
+                                                }
+
+                                                if is_sync {
+                                                    ui.horizontal(|ui| {
+                                                        ui.label("Rate:");
+                                                        let mut rate = m.params.get("rate").and_then(|v| v.as_str()).unwrap_or("1/4").to_string();
+                                                        egui::ComboBox::from_id_source(format!("orbit_rate_{}", m.id))
+                                                            .selected_text(rate.clone())
+                                                            .show_ui(ui, |ui| {
+                                                                ui.selectable_value(&mut rate, "4 Bar".into(), "4 Bar");
+                                                                ui.selectable_value(&mut rate, "2 Bar".into(), "2 Bar");
+                                                                ui.selectable_value(&mut rate, "1 Bar".into(), "1 Bar");
+                                                                ui.selectable_value(&mut rate, "1/2".into(), "1/2");
+                                                                ui.selectable_value(&mut rate, "1/4".into(), "1/4");
+                                                                ui.selectable_value(&mut rate, "1/8".into(), "1/8");
+                                                            });
+                                                        if rate != m.params.get("rate").and_then(|v| v.as_str()).unwrap_or("1/4") {
+                                                            m.params.insert("rate".into(), serde_json::json!(rate));
+                                                            needs_save = true;
+                                                        }
+                                                    });
+                                                } else {
+                                                    let mut speed = m.params.get("speed").and_then(|v| v.as_f64()).unwrap_or(1.0);
+                                                    if ui.add(egui::Slider::new(&mut speed, 0.1..=5.0).text("Speed")).changed() {
+                                                        m.params.insert("speed".into(), speed.into());
+                                                        needs_save = true;
+                                                    }
+                                                }
+                                            });
                                         }
                                         });
                                     // Close collapsing and push_id blocks, then the for-loop
                                     });
                                 });
                             }
-                            if let Some(idx) = delete_mask_idx { scene.masks.remove(idx); }
-                            if needs_save { /* autosave will handle */ }
+                            if let Some(idx) = delete_mask_idx {
+                                scene.masks.remove(idx);
+                                needs_save = true;
+                            }
                         }
                         } // End of !is_being_dragged
                         } // End of push_id
@@ -2237,11 +2303,45 @@ impl eframe::App for MyApp {
                                    // Note: Radius param is normalized to Width?
                                    // Logic in draw: let radius_screen = r * rect.width() * self.view.scale;
                                    let radius_scr = r * rect.width() * self.view.scale;
-                                   
+
                                    let dist_scr = (dx_scr.powi(2) + dy_scr.powi(2)).sqrt();
-                                   
+
                                    if (dist_scr - radius_scr).abs() < handle_size {
                                        canvas_ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::ResizeNwSe);
+                                       break;
+                                   }
+                               },
+                               "orbit" => {
+                                   let w = m.params.get("width").and_then(|v| v.as_f64()).unwrap_or(0.3) as f32;
+                                   let h = m.params.get("height").and_then(|v| v.as_f64()).unwrap_or(0.3) as f32;
+
+                                   let center_scr = to_screen(m.x, m.y, &self.view);
+                                   let dx_scr = pos.x - center_scr.x;
+                                   let dy_scr = pos.y - center_scr.y;
+
+                                   let w_scr = w * rect.width() * self.view.scale;
+                                   let h_scr = h * rect.height() * self.view.scale;
+                                   let hw_scr = w_scr / 2.0;
+                                   let hh_scr = h_scr / 2.0;
+
+                                   let in_y = dy_scr >= -hh_scr - handle_size && dy_scr <= hh_scr + handle_size;
+                                   let in_x = dx_scr >= -hw_scr - handle_size && dx_scr <= hw_scr + handle_size;
+
+                                   // Show cursor hints for resize handles
+                                   if in_x && (dy_scr - (-hh_scr)).abs() < handle_size {
+                                       canvas_ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::ResizeVertical);
+                                       break;
+                                   }
+                                   if in_y && (dx_scr - hw_scr).abs() < handle_size {
+                                       canvas_ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::ResizeHorizontal);
+                                       break;
+                                   }
+                                   if in_x && (dy_scr - hh_scr).abs() < handle_size {
+                                       canvas_ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::ResizeVertical);
+                                       break;
+                                   }
+                                   if in_y && (dx_scr - (-hw_scr)).abs() < handle_size {
+                                       canvas_ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::ResizeHorizontal);
                                        break;
                                    }
                                },
@@ -2329,14 +2429,60 @@ impl eframe::App for MyApp {
                                    let dx_scr = pos.x - center_scr.x;
                                    let dy_scr = pos.y - center_scr.y;
                                    let radius_scr = r * rect.width() * self.view.scale;
-                                   
+
                                    let dist_scr = (dx_scr.powi(2) + dy_scr.powi(2)).sqrt();
-                                   
+
                                    if (dist_scr - radius_scr).abs() < handle_size {
                                        self.view.drag_id = Some(m.id);
                                        self.view.drag_type = DragType::ResizeMask(1); // Treat as "Right" for logic
                                        hit = true;
-                                       canvas_ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::ResizeNwSe); 
+                                       canvas_ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::ResizeNwSe);
+                                       break;
+                                   }
+                               },
+                               "orbit" => {
+                                   let w = m.params.get("width").and_then(|v| v.as_f64()).unwrap_or(0.3) as f32;
+                                   let h = m.params.get("height").and_then(|v| v.as_f64()).unwrap_or(0.3) as f32;
+
+                                   let center_scr = to_screen(m.x, m.y, &self.view);
+                                   let dx_scr = pos.x - center_scr.x;
+                                   let dy_scr = pos.y - center_scr.y;
+
+                                   let w_scr = w * rect.width() * self.view.scale;
+                                   let h_scr = h * rect.height() * self.view.scale;
+                                   let hw_scr = w_scr / 2.0;
+                                   let hh_scr = h_scr / 2.0;
+
+                                   let in_y = dy_scr >= -hh_scr - handle_size && dy_scr <= hh_scr + handle_size;
+                                   let in_x = dx_scr >= -hw_scr - handle_size && dx_scr <= hw_scr + handle_size;
+
+                                   // Check edges for resize handles
+                                   if in_x && (dy_scr - (-hh_scr)).abs() < handle_size {
+                                       self.view.drag_id = Some(m.id);
+                                       self.view.drag_type = DragType::ResizeMask(0); // Top
+                                       hit = true;
+                                       canvas_ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::ResizeVertical);
+                                       break;
+                                   }
+                                   if in_y && (dx_scr - hw_scr).abs() < handle_size {
+                                       self.view.drag_id = Some(m.id);
+                                       self.view.drag_type = DragType::ResizeMask(1); // Right
+                                       hit = true;
+                                       canvas_ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::ResizeHorizontal);
+                                       break;
+                                   }
+                                   if in_x && (dy_scr - hh_scr).abs() < handle_size {
+                                       self.view.drag_id = Some(m.id);
+                                       self.view.drag_type = DragType::ResizeMask(2); // Bottom
+                                       hit = true;
+                                       canvas_ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::ResizeVertical);
+                                       break;
+                                   }
+                                   if in_y && (dx_scr - (-hw_scr)).abs() < handle_size {
+                                       self.view.drag_id = Some(m.id);
+                                       self.view.drag_type = DragType::ResizeMask(3); // Left
+                                       hit = true;
+                                       canvas_ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::ResizeHorizontal);
                                        break;
                                    }
                                },
@@ -2385,11 +2531,28 @@ impl eframe::App for MyApp {
                                            break;
                                        }
                                    },
+                                   "orbit" => {
+                                       let w = m.params.get("width").and_then(|v| v.as_f64()).unwrap_or(0.3) as f32;
+                                       let h = m.params.get("height").and_then(|v| v.as_f64()).unwrap_or(0.3) as f32;
+
+                                       let dx = wx - m.x;
+                                       let dy = wy - m.y;
+
+                                       let half_w = w / 2.0;
+                                       let half_h = h / 2.0;
+
+                                       if dx >= -half_w && dx <= half_w && dy >= -half_h && dy <= half_h {
+                                           self.view.drag_id = Some(m.id);
+                                           self.view.drag_type = DragType::Mask;
+                                           hit = true;
+                                           break;
+                                       }
+                                   },
                                    _ => {}
                                }
                            }
                        }
-                       
+
                        // 3. HIT TEST STRIPS
                        if !hit && !self.state.layout_locked {
                            for s in &self.state.strips {
@@ -2547,6 +2710,30 @@ impl eframe::App for MyApp {
                                                   let dr_norm = dr_scr / (rect.width() * self.view.scale);
                                                   m.params.insert("radius".to_string(), (r + dr_norm).max(0.01).into());
                                               },
+                                              "orbit" => {
+                                                  // Orbit has no rotation, simpler resize logic
+                                                  let w = m.params.get("width").and_then(|v| v.as_f64()).unwrap_or(0.3) as f32;
+                                                  let h = m.params.get("height").and_then(|v| v.as_f64()).unwrap_or(0.3) as f32;
+                                                  let w_scr = w * rect.width() * self.view.scale;
+                                                  let h_scr = h * rect.height() * self.view.scale;
+                                                  let mut new_w_scr = w_scr;
+                                                  let mut new_h_scr = h_scr;
+                                                  let mut shift_x_scr = 0.0f32;
+                                                  let mut shift_y_scr = 0.0f32;
+                                                  match edge_idx {
+                                                      0 => { new_h_scr = (h_scr - delta.y).max(1.0); shift_y_scr = delta.y / 2.0; },
+                                                      1 => { new_w_scr = (w_scr + delta.x).max(1.0); shift_x_scr = delta.x / 2.0; },
+                                                      2 => { new_h_scr = (h_scr + delta.y).max(1.0); shift_y_scr = delta.y / 2.0; },
+                                                      3 => { new_w_scr = (w_scr - delta.x).max(1.0); shift_x_scr = delta.x / 2.0; },
+                                                      _ => {}
+                                                  }
+                                                  let new_w = new_w_scr / (rect.width() * self.view.scale);
+                                                  let new_h = new_h_scr / (rect.height() * self.view.scale);
+                                                  m.x += shift_x_scr / (rect.width() * self.view.scale);
+                                                  m.y += shift_y_scr / (rect.height() * self.view.scale);
+                                                  m.params.insert("width".to_string(), new_w.max(0.01).into());
+                                                  m.params.insert("height".to_string(), new_h.max(0.01).into());
+                                              },
                                               _ => {}
                                           }
                                           // End scene mask branch
@@ -2591,6 +2778,29 @@ impl eframe::App for MyApp {
                                                   let dr_norm = dr_scr / (rect.width() * self.view.scale);
                                                   m.params.insert("radius".to_string(), (r + dr_norm).max(0.01).into());
                                               },
+                                              "orbit" => {
+                                                  let w = m.params.get("width").and_then(|v| v.as_f64()).unwrap_or(0.3) as f32;
+                                                  let h = m.params.get("height").and_then(|v| v.as_f64()).unwrap_or(0.3) as f32;
+                                                  let w_scr = w * rect.width() * self.view.scale;
+                                                  let h_scr = h * rect.height() * self.view.scale;
+                                                  let mut new_w_scr = w_scr;
+                                                  let mut new_h_scr = h_scr;
+                                                  let mut shift_x_scr = 0.0f32;
+                                                  let mut shift_y_scr = 0.0f32;
+                                                  match edge_idx {
+                                                      0 => { new_h_scr = (h_scr - delta.y).max(1.0); shift_y_scr = delta.y / 2.0; },
+                                                      1 => { new_w_scr = (w_scr + delta.x).max(1.0); shift_x_scr = delta.x / 2.0; },
+                                                      2 => { new_h_scr = (h_scr + delta.y).max(1.0); shift_y_scr = delta.y / 2.0; },
+                                                      3 => { new_w_scr = (w_scr - delta.x).max(1.0); shift_x_scr = delta.x / 2.0; },
+                                                      _ => {}
+                                                  }
+                                                  let new_w = new_w_scr / (rect.width() * self.view.scale);
+                                                  let new_h = new_h_scr / (rect.height() * self.view.scale);
+                                                  m.x += shift_x_scr / (rect.width() * self.view.scale);
+                                                  m.y += shift_y_scr / (rect.height() * self.view.scale);
+                                                  m.params.insert("width".to_string(), new_w.max(0.01).into());
+                                                  m.params.insert("height".to_string(), new_h.max(0.01).into());
+                                              },
                                               _ => {}
                                           }
                                       }
@@ -2634,6 +2844,29 @@ impl eframe::App for MyApp {
                                               let dr_scr = delta.x;
                                               let dr_norm = dr_scr / (rect.width() * self.view.scale);
                                               m.params.insert("radius".to_string(), (r + dr_norm).max(0.01).into());
+                                          },
+                                          "orbit" => {
+                                              let w = m.params.get("width").and_then(|v| v.as_f64()).unwrap_or(0.3) as f32;
+                                              let h = m.params.get("height").and_then(|v| v.as_f64()).unwrap_or(0.3) as f32;
+                                              let w_scr = w * rect.width() * self.view.scale;
+                                              let h_scr = h * rect.height() * self.view.scale;
+                                              let mut new_w_scr = w_scr;
+                                              let mut new_h_scr = h_scr;
+                                              let mut shift_x_scr = 0.0f32;
+                                              let mut shift_y_scr = 0.0f32;
+                                              match edge_idx {
+                                                  0 => { new_h_scr = (h_scr - delta.y).max(1.0); shift_y_scr = delta.y / 2.0; },
+                                                  1 => { new_w_scr = (w_scr + delta.x).max(1.0); shift_x_scr = delta.x / 2.0; },
+                                                  2 => { new_h_scr = (h_scr + delta.y).max(1.0); shift_y_scr = delta.y / 2.0; },
+                                                  3 => { new_w_scr = (w_scr - delta.x).max(1.0); shift_x_scr = delta.x / 2.0; },
+                                                  _ => {}
+                                              }
+                                              let new_w = new_w_scr / (rect.width() * self.view.scale);
+                                              let new_h = new_h_scr / (rect.height() * self.view.scale);
+                                              m.x += shift_x_scr / (rect.width() * self.view.scale);
+                                              m.y += shift_y_scr / (rect.height() * self.view.scale);
+                                              m.params.insert("width".to_string(), new_w.max(0.01).into());
+                                              m.params.insert("height".to_string(), new_h.max(0.01).into());
                                           },
                                           _ => {}
                                       }
@@ -3154,6 +3387,109 @@ impl eframe::App for MyApp {
                              painter.circle(pos, max_radius_screen, egui::Color32::TRANSPARENT,
                                  egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(
                                      stroke_color.r(), stroke_color.g(), stroke_color.b(), 100)));
+                         },
+                         "orbit" => {
+                             let w = m.params.get("width").and_then(|v| v.as_f64()).unwrap_or(0.3) as f32;
+                             let h = m.params.get("height").and_then(|v| v.as_f64()).unwrap_or(0.3) as f32;
+                             let bar_width_param = m.params.get("bar_width").and_then(|v| v.as_f64()).unwrap_or(0.1) as f32;
+                             let speed_param = m.params.get("speed").and_then(|v| v.as_f64()).unwrap_or(1.0) as f32;
+
+                             let half_w = w / 2.0;
+                             let half_h = h / 2.0;
+
+                             // Draw rectangle outline
+                             let corners = vec![
+                                 to_screen(m.x - half_w, m.y - half_h, &self.view),
+                                 to_screen(m.x + half_w, m.y - half_h, &self.view),
+                                 to_screen(m.x + half_w, m.y + half_h, &self.view),
+                                 to_screen(m.x - half_w, m.y + half_h, &self.view),
+                             ];
+
+                             painter.add(egui::Shape::convex_polygon(
+                                 corners.clone(),
+                                 color,
+                                 egui::Stroke::new(2.0, base_color)
+                             ));
+
+                             // Calculate phase for orbit animation
+                             let t = self.engine.get_time();
+                             let is_sync = m.params.get("sync").and_then(|v| v.as_bool()).unwrap_or(false);
+                             let constant_speed = m.params.get("constant_speed").and_then(|v| v.as_bool()).unwrap_or(false);
+                             let raw_phase = if is_sync {
+                                 let beat = self.engine.get_beat();
+                                 let rate_str = m.params.get("rate").and_then(|v| v.as_str()).unwrap_or("1/4");
+                                 let divisor = match rate_str {
+                                     "4 Bar" => 16.0, "2 Bar" => 8.0, "1 Bar" => 4.0,
+                                     "1/2" => 2.0, "1/4" => 1.0, "1/8" => 0.5, _ => 1.0,
+                                 };
+                                 beat / divisor
+                             } else {
+                                 (t * speed_param * self.engine.speed / 4.0) as f64
+                             };
+
+                             // Calculate side and progress based on constant_speed setting
+                             let (side, side_progress): (u32, f32) = if constant_speed {
+                                 // Constant speed: bar moves at same speed on all sides
+                                 // Each side still starts on the beat, but shorter sides finish early and pause
+                                 let phase = (raw_phase * 4.0).rem_euclid(4.0);
+                                 let current_side = phase.floor() as u32;
+                                 let beat_progress = phase.fract() as f32;
+
+                                 let max_side = w.max(h);
+                                 let current_side_length = match current_side {
+                                     0 | 2 => w,
+                                     _ => h,
+                                 };
+
+                                 let side_duration_ratio = current_side_length / max_side;
+                                 let progress = if beat_progress >= side_duration_ratio {
+                                     -1.0 // Hide bar until next beat
+                                 } else {
+                                     beat_progress / side_duration_ratio
+                                 };
+
+                                 (current_side, progress)
+                             } else {
+                                 let phase = (raw_phase * 4.0).rem_euclid(4.0);
+                                 (phase.floor() as u32, phase.fract() as f32)
+                             };
+
+                             // Only draw bar if not hidden (side_progress >= 0)
+                             if side_progress >= 0.0 {
+                                 // Calculate bar position based on side
+                                 let (bar_center_x, bar_center_y, is_horizontal) = match side {
+                                     0 => (-half_w + side_progress * w, -half_h, false),
+                                     1 => (half_w, -half_h + side_progress * h, true),
+                                     2 => (half_w - side_progress * w, half_h, false),
+                                     _ => (-half_w, half_h - side_progress * h, true),
+                                 };
+
+                                 // Draw the bar
+                                 let bar_color = egui::Color32::from_rgba_unmultiplied(base_color.r(), base_color.g(), base_color.b(), 120);
+                                 let bar_points = if is_horizontal {
+                                     // Horizontal bar (on left/right edges)
+                                     vec![
+                                         to_screen(m.x - half_w, m.y + bar_center_y - bar_width_param, &self.view),
+                                         to_screen(m.x + half_w, m.y + bar_center_y - bar_width_param, &self.view),
+                                         to_screen(m.x + half_w, m.y + bar_center_y + bar_width_param, &self.view),
+                                         to_screen(m.x - half_w, m.y + bar_center_y + bar_width_param, &self.view),
+                                     ]
+                                 } else {
+                                     // Vertical bar (on top/bottom edges)
+                                     vec![
+                                         to_screen(m.x + bar_center_x - bar_width_param, m.y - half_h, &self.view),
+                                         to_screen(m.x + bar_center_x + bar_width_param, m.y - half_h, &self.view),
+                                         to_screen(m.x + bar_center_x + bar_width_param, m.y + half_h, &self.view),
+                                         to_screen(m.x + bar_center_x - bar_width_param, m.y + half_h, &self.view),
+                                     ]
+                                 };
+
+                                 painter.add(egui::Shape::convex_polygon(
+                                     bar_points,
+                                     bar_color,
+                                     egui::Stroke::NONE
+                                 ));
+                             }
                          },
                          _ => {}
                     }

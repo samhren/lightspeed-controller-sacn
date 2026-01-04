@@ -732,6 +732,154 @@ impl LightingEngine {
                     }
                 }
             }
+        } else if mask.mask_type == "orbit" {
+            // Orbit Mask: A bar that traces around the perimeter of a rectangle
+            // Goes: top (left→right) → right (top→bottom) → bottom (right→left) → left (bottom→top)
+            let width = mask.params.get("width").and_then(|v| v.as_f64()).unwrap_or(0.3) as f32;
+            let height = mask.params.get("height").and_then(|v| v.as_f64()).unwrap_or(0.3) as f32;
+            let bar_width = mask.params.get("bar_width").and_then(|v| v.as_f64()).unwrap_or(0.1) as f32;
+            let hard_edge = mask.params.get("hard_edge").and_then(|v| v.as_bool()).unwrap_or(false);
+            let constant_speed = mask.params.get("constant_speed").and_then(|v| v.as_bool()).unwrap_or(false);
+
+            // Calculate raw phase (0 to 1 for one full orbit)
+            let is_sync = mask.params.get("sync").and_then(|v| v.as_bool()).unwrap_or(false);
+            let raw_phase = if is_sync {
+                let rate_str = mask.params.get("rate").and_then(|v| v.as_str()).unwrap_or("1/4");
+                let divisor = match rate_str {
+                    "4 Bar" => 16.0, "2 Bar" => 8.0, "1 Bar" => 4.0,
+                    "1/2" => 2.0, "1/4" => 1.0, "1/8" => 0.5, _ => 1.0,
+                };
+                beat / divisor
+            } else {
+                let speed = mask.params.get("speed").and_then(|v| v.as_f64()).unwrap_or(1.0) as f32;
+                (t * speed * self.speed / 4.0) as f64 // Divide by 4 to normalize
+            };
+
+            let half_w = width / 2.0;
+            let half_h = height / 2.0;
+
+            // Calculate side and progress based on constant_speed setting
+            let (side, side_progress): (u32, f32) = if constant_speed {
+                // Constant speed: bar moves at same speed on all sides
+                // Each side still starts on the beat, but shorter sides finish early and pause
+                let phase = (raw_phase * 4.0).rem_euclid(4.0);
+                let current_side = phase.floor() as u32;
+                let beat_progress = phase.fract() as f32; // 0..1 within current beat
+
+                // The longest side takes the full beat, shorter sides finish early
+                let max_side = width.max(height);
+                let current_side_length = match current_side {
+                    0 | 2 => width,  // Top/bottom edges
+                    _ => height,     // Left/right edges
+                };
+
+                // How much of the beat this side needs (relative to longest side)
+                let side_duration_ratio = current_side_length / max_side;
+
+                // Calculate progress: if beat_progress exceeds side_duration_ratio, return -1.0 to hide bar
+                let progress = if beat_progress >= side_duration_ratio {
+                    -1.0 // Finished, hide bar until next beat
+                } else {
+                    beat_progress / side_duration_ratio // Scale progress to 0..1
+                };
+
+                (current_side, progress)
+            } else {
+                // Equal time per side (original behavior)
+                let phase = (raw_phase * 4.0).rem_euclid(4.0);
+                (phase.floor() as u32, phase.fract() as f32)
+            };
+
+            // Calculate bar center position based on which side we're on
+            // The bar is always perpendicular to the direction of travel
+            let (bar_center_x, bar_center_y, is_horizontal) = match side {
+                0 => {
+                    // Top edge: moving left to right, bar is vertical
+                    let x = -half_w + side_progress * width;
+                    (x, -half_h, false)
+                }
+                1 => {
+                    // Right edge: moving top to bottom, bar is horizontal
+                    let y = -half_h + side_progress * height;
+                    (half_w, y, true)
+                }
+                2 => {
+                    // Bottom edge: moving right to left, bar is vertical
+                    let x = half_w - side_progress * width;
+                    (x, half_h, false)
+                }
+                _ => {
+                    // Left edge: moving bottom to top, bar is horizontal
+                    let y = half_h - side_progress * height;
+                    (-half_w, y, true)
+                }
+            };
+
+            // Only render if bar is visible (side_progress >= 0, otherwise waiting for next beat)
+            if side_progress >= 0.0 {
+                // Get color
+                let m_color = mask.params.get("color").and_then(|v| {
+                    let arr = v.as_array()?;
+                    Some([arr.get(0)?.as_u64()? as u8, arr.get(1)?.as_u64()? as u8, arr.get(2)?.as_u64()? as u8])
+                }).unwrap_or([0, 255, 255]);
+                let final_color = get_color(m_color);
+
+                // Process each strip
+                for strip in strips.iter_mut() {
+                    let pixel_limit = strip.pixel_count.min(strip.data.len());
+
+                    for p in 0..pixel_limit {
+                        // Calculate pixel position in world space
+                        let local_pos_x = if strip.flipped {
+                            ((strip.pixel_count - 1).saturating_sub(p)) as f32 * strip.spacing
+                        } else {
+                            p as f32 * strip.spacing
+                        };
+                        let px = strip.x + local_pos_x;
+                        let py = strip.y;
+
+                        // Transform to mask's local coordinate system (no rotation for orbit)
+                        let mask_local_x = px - mx;
+                        let mask_local_y = py - my;
+
+                        // Check if pixel is within mask bounds
+                        const EPSILON: f32 = 0.0001;
+                        if (mask_local_x >= -(half_w + EPSILON) && mask_local_x <= (half_w + EPSILON)) &&
+                           (mask_local_y >= -(half_h + EPSILON) && mask_local_y <= (half_h + EPSILON)) {
+
+                            // Calculate distance to bar based on bar orientation
+                            let dist_to_bar = if is_horizontal {
+                                // Bar is horizontal (on left/right edges) - check Y distance
+                                (mask_local_y - bar_center_y).abs()
+                            } else {
+                                // Bar is vertical (on top/bottom edges) - check X distance
+                                (mask_local_x - bar_center_x).abs()
+                            };
+
+                            if dist_to_bar <= bar_width {
+                                let intensity = if hard_edge {
+                                    1.0
+                                } else {
+                                    (1.0 - dist_to_bar / bar_width).max(0.0)
+                                };
+
+                                if intensity > 0.0 {
+                                    let r = (final_color[0] as f32 * intensity) as u8;
+                                    let g = (final_color[1] as f32 * intensity) as u8;
+                                    let b = (final_color[2] as f32 * intensity) as u8;
+
+                                    let curr = strip.data[p];
+                                    strip.data[p] = [
+                                        curr[0].saturating_add(r),
+                                        curr[1].saturating_add(g),
+                                        curr[2].saturating_add(b)
+                                    ];
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         } else if mask.mask_type == "radial" {
              let base_radius = mask.params.get("radius").and_then(|v| v.as_f64()).unwrap_or(0.2) as f32;
              let radius = apply_lfo_modulation(base_radius, &mask.params, "radius", t, beat);

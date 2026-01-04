@@ -422,6 +422,9 @@ impl Database {
     pub fn save_state(&mut self, state: &AppState) -> Result<()> {
         let tx = self.conn.transaction()?;
 
+        // Disable foreign key checks during bulk replace
+        tx.execute("PRAGMA foreign_keys = OFF", [])?;
+
         // Clear and re-insert all data (simpler than diffing for updates)
         tx.execute("DELETE FROM scene_masks", [])?;
         tx.execute("DELETE FROM scenes", [])?;
@@ -532,6 +535,9 @@ impl Database {
                 if state.midi_enabled { 1 } else { 0 },
             ],
         )?;
+
+        // Re-enable foreign key checks
+        tx.execute("PRAGMA foreign_keys = ON", [])?;
 
         tx.commit()?;
         Ok(())
