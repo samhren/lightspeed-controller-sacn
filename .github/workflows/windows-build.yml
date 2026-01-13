@@ -1,0 +1,41 @@
+name: Windows Build
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*.*.*'
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build (release)
+        run: cargo build --release --locked
+
+      - name: Stage package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path dist/Lightspeed -Force | Out-Null
+          Copy-Item target/release/lightspeed.exe dist/Lightspeed/Lightspeed.exe
+          if (Test-Path LICENSE) { Copy-Item LICENSE dist/Lightspeed/ }
+          if (Test-Path README.md) { Copy-Item README.md dist/Lightspeed/ }
+
+      - name: Create zip
+        shell: pwsh
+        run: |
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          [System.IO.Compression.ZipFile]::CreateFromDirectory('dist/Lightspeed', 'dist/Lightspeed_Windows.zip')
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Lightspeed_Windows
+          path: dist/Lightspeed_Windows.zip
+

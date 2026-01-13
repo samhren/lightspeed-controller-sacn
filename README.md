@@ -115,3 +115,18 @@ MIT License - see LICENSE file for details
 
 ## Acknowledgments
 Built with Google Antigravity and Claude Code.
+
+## Windows Packaging
+
+- Build locally (Windows):
+  - Open a Developer PowerShell, run `scripts\package_windows.ps1` (builds `release`, stages files, and creates `dist\Lightspeed_Windows.zip`).
+  - Share the ZIP; your friend extracts and runs `Lightspeed.exe`.
+
+- Build via GitHub Actions:
+  - Push a tag like `v1.0.0` or run the workflow manually.
+  - Workflow `Windows Build` uploads `Lightspeed_Windows.zip` as an artifact.
+
+- Notes:
+  - Console window is hidden in release on Windows.
+  - User data lives under `%APPDATA%\Lightspeed\lighting_config.db`.
+  - No installer needed; portable EXE is zipped for easy sharing.
