@@ -1808,7 +1808,7 @@ impl eframe::App for MyApp {
 
                                         // Bar Width
                                         let mut bw = m.params.get("bar_width").and_then(|v| v.as_f64()).unwrap_or(0.1) as f32;
-                                        if ui.add(egui::Slider::new(&mut bw, 0.01..=0.5).text("Bar Width")).changed() {
+                                        if ui.add(egui::Slider::new(&mut bw, 0.01..=4.0).text("Bar Width")).changed() {
                                             m.params.insert("bar_width".into(), bw.into());
                                             needs_save = true;
                                         }
@@ -1985,7 +1985,7 @@ impl eframe::App for MyApp {
                                                         ui.horizontal(|ui| {
                                                             ui.label("Bar Width:");
                                                             let mut width = m.params.get("bar_width").and_then(|v| v.as_f64()).unwrap_or(0.1);
-                                                            if ui.add(egui::Slider::new(&mut width, 0.01..=1.0).text("Width")).changed() {
+                                                            if ui.add(egui::Slider::new(&mut width, 0.01..=4.0).text("Width")).changed() {
                                                                 m.params.insert("bar_width".into(), width.into());
                                                                 needs_save = true;
                                                             }

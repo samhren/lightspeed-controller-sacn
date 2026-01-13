@@ -50,10 +50,10 @@ pub struct LightingEngine {
     tap_intervals: Vec<f64>,
     pub audio_bpm: f64,
 
-    // Audio Snap Phase Tracking
+    // Audio Snap Phase Tracking (PLL-style)
     last_audio_beat_time: Option<Instant>,
-    phase_error: f64, // How far off we are from audio beats (in beats)
-    phase_correction_rate: f64, // How fast we correct (beats per second)
+    phase_offset: f64,           // Accumulated phase offset from audio sync
+    last_onset_time: Option<Instant>,  // For minimum interval enforcement
 
     // Sparkle effect state tracking
     sparkle_states: Vec<SparklePixel>,
@@ -107,8 +107,8 @@ impl LightingEngine {
             tap_intervals: Vec::new(),
             audio_bpm: 0.0,
             last_audio_beat_time: None,
-            phase_error: 0.0,
-            phase_correction_rate: 0.5, // Correct half a beat per second when out of sync
+            phase_offset: 0.0,
+            last_onset_time: None,
             sparkle_states: Vec::new(),
             pulse_states: Vec::new(),
             glitch_states: Vec::new(),
@@ -153,129 +153,134 @@ impl LightingEngine {
         // Hybrid Sync / Audio logic
         let mut force_snap = false;
         if let Some(audio) = &self.audio_listener {
-             // Read Volume (handle poisoned mutex gracefully)
-             let vol = audio.current_volume.lock()
-                 .map(|v| *v)
-                 .unwrap_or_else(|poisoned| {
-                     log::warn!("Audio mutex poisoned, recovering");
-                     *poisoned.into_inner()
-                 });
+            // Use the new onset detection system
+            let (is_onset, onset_strength, vol) = if let Ok(state) = audio.audio_state.lock() {
+                (state.is_onset, state.onset_strength, state.current_volume)
+            } else {
+                // Fallback to legacy volume-based detection
+                let vol = audio.current_volume.lock()
+                    .map(|v| *v)
+                    .unwrap_or(0.0);
+                let threshold = 0.5 - (self.audio_sensitivity * 0.45);
+                let is_peak = vol > threshold && !self.was_peaking;
+                (is_peak, if is_peak { 1.0 } else { 0.0 }, vol)
+            };
 
-             // Detect Peak using Sensitivity
-             // Sensitivity 0.0 = Need HUGE volume (Threshold 1.0)
-             // Sensitivity 1.0 = React to silence (Threshold 0.0)
-             // Let's map Sensitivity 0..1 to Threshold 0.5 .. 0.01
-             let threshold = 0.5 - (self.audio_sensitivity * 0.45);
+            // Apply sensitivity threshold to onset strength
+            let sensitivity_threshold = 0.5 - (self.audio_sensitivity * 0.45);
+            let beat_detected = is_onset && onset_strength > sensitivity_threshold;
 
-             let is_peaking = vol > threshold;
+            if beat_detected {
+                let now_t = Instant::now();
 
-             // Rising Edge Detection
-             if is_peaking && !self.was_peaking {
-                 // AUDIO HIT!
+                // Enforce minimum interval between detected beats (prevents double triggers)
+                // 200ms minimum = 300 BPM max, keeps it conservative
+                let min_interval_ok = self.last_onset_time
+                    .map(|t| now_t.duration_since(t).as_secs_f64() > 0.2)
+                    .unwrap_or(true);
 
-                 let now_t = Instant::now();
+                if min_interval_ok {
+                    self.last_onset_time = Some(now_t);
 
-                 // 1. Audio BPM Detection (Tap Tempo)
-                 if let Some(last) = self.last_tap_time {
-                     let delta = now_t.duration_since(last).as_secs_f64();
-                     // Filter reasonable range: 30 BPM (2.0s) to 200 BPM (0.3s)
-                     if delta > 0.3 && delta < 2.0 {
-                         self.tap_intervals.push(delta);
-                         if self.tap_intervals.len() > 8 {
-                             self.tap_intervals.remove(0);
-                         }
+                    // 1. Audio BPM Detection (improved tap tempo)
+                    if let Some(last) = self.last_tap_time {
+                        let delta = now_t.duration_since(last).as_secs_f64();
+                        // Filter reasonable range: 40 BPM (1.5s) to 200 BPM (0.3s)
+                        if delta > 0.3 && delta < 1.5 {
+                            self.tap_intervals.push(delta);
+                            if self.tap_intervals.len() > 12 {
+                                self.tap_intervals.remove(0);
+                            }
 
-                         // Average with outlier filtering
-                         let mut sorted = self.tap_intervals.clone();
-                         sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                            // Calculate BPM using weighted median (recent beats weighted higher)
+                            if self.tap_intervals.len() >= 2 {
+                                let mut weighted: Vec<(f64, f64)> = self.tap_intervals
+                                    .iter()
+                                    .enumerate()
+                                    .map(|(i, &interval)| {
+                                        // More recent = higher weight
+                                        let weight = (i + 1) as f64;
+                                        (interval, weight)
+                                    })
+                                    .collect();
 
-                         // Use median or trimmed mean for better accuracy
-                         let mid = sorted.len() / 2;
-                         let avg_interval = if sorted.len() > 3 {
-                             // Use middle 50% of values
-                             let start = sorted.len() / 4;
-                             let end = 3 * sorted.len() / 4;
-                             sorted[start..end].iter().sum::<f64>() / (end - start) as f64
-                         } else {
-                             sorted[mid]
-                         };
+                                weighted.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
 
-                         self.audio_bpm = 60.0 / avg_interval;
-                     } else if delta > 2.0 {
-                         // Reset if too long silence
-                         self.tap_intervals.clear();
-                     }
-                 }
-                 self.last_tap_time = Some(now_t);
+                                // Find weighted median
+                                let total_weight: f64 = weighted.iter().map(|(_, w)| w).sum();
+                                let mut cumulative = 0.0;
+                                let mut avg_interval = weighted[0].0;
+                                for (interval, weight) in &weighted {
+                                    cumulative += weight;
+                                    if cumulative >= total_weight / 2.0 {
+                                        avg_interval = *interval;
+                                        break;
+                                    }
+                                }
 
-                 if self.hybrid_sync {
-                     // NEW APPROACH: Track expected beat time and calculate phase error
+                                self.audio_bpm = 60.0 / avg_interval;
+                            }
+                        } else if delta > 2.0 {
+                            // Reset if too long silence
+                            self.tap_intervals.clear();
+                        }
+                    }
+                    self.last_tap_time = Some(now_t);
 
-                     // Get current effective BPM
-                     let current_bpm = if self.link.num_peers() > 0 {
-                         tempo
-                     } else if self.audio_bpm > 30.0 {
-                         self.audio_bpm
-                     } else {
-                         120.0 * self.speed as f64
-                     };
+                    // 2. Phase correction for hybrid sync
+                    if self.hybrid_sync {
+                        // Get current effective BPM
+                        let current_bpm = if self.link.num_peers() > 0 {
+                            tempo
+                        } else if self.audio_bpm > 30.0 {
+                            self.audio_bpm
+                        } else {
+                            120.0 * self.speed as f64
+                        };
 
-                     if current_bpm > 30.0 {
-                         // Calculate where we SHOULD be based on last confirmed audio beat
-                         if let Some(last_audio_time) = self.last_audio_beat_time {
-                             let time_since_last = now_t.duration_since(last_audio_time).as_secs_f64();
-                             let expected_beats_elapsed = (current_bpm / 60.0) * time_since_last;
+                        // Only do phase correction if we have a stable tempo estimate
+                        // (at least 4 consistent beat intervals)
+                        let have_stable_tempo = self.tap_intervals.len() >= 4;
 
-                             // Check if this hit is close to a beat boundary
-                             let beats_to_nearest = expected_beats_elapsed.fract();
-                             let dist_to_next = 1.0 - beats_to_nearest;
-                             let dist_to_prev = beats_to_nearest;
+                        if current_bpm > 30.0 && have_stable_tempo {
+                            // Check if this beat is near where we expect it
+                            // based on the established tempo
+                            let expected_interval = 60.0 / current_bpm;
+                            let actual_interval = self.last_audio_beat_time
+                                .map(|t| now_t.duration_since(t).as_secs_f64())
+                                .unwrap_or(expected_interval);
 
-                             // Tighter tolerance - only accept hits near actual beats
-                             let beat_window = 0.25; // 25% of a beat on either side
+                            // Only apply correction if beat is within 30% of expected timing
+                            let timing_ratio = actual_interval / expected_interval;
+                            let is_on_beat = timing_ratio > 0.7 && timing_ratio < 1.3;
 
-                             if dist_to_prev < beat_window || dist_to_next < beat_window {
-                                 // This is likely a real beat!
+                            if is_on_beat {
+                                // Current beat phase (0.0 to 1.0)
+                                let current_phase = (self.flywheel_beat + self.phase_offset).fract();
 
-                                 // Calculate phase error: difference between expected and actual
-                                 let current_phase = self.flywheel_beat.fract();
+                                // Audio beat should be at phase 0.0
+                                // Calculate shortest distance to phase 0
+                                let phase_error = if current_phase < 0.5 {
+                                    -current_phase  // We're slightly past the beat, pull back
+                                } else {
+                                    1.0 - current_phase  // We're before the beat, push forward
+                                };
 
-                                 // Determine which beat boundary we're snapping to
-                                 let target_phase = if dist_to_prev < dist_to_next {
-                                     0.0 // Snap to previous beat (just happened)
-                                 } else {
-                                     1.0 // Snap to next beat (about to happen)
-                                 };
+                                // Gentle correction - only correct 40% per beat
+                                let correction = phase_error * 0.4;
+                                self.phase_offset += correction;
+                            }
 
-                                 // Calculate error (how far off we are)
-                                 let error = if target_phase == 0.0 {
-                                     -current_phase // We're past 0, need to pull back
-                                 } else {
-                                     1.0 - current_phase // We're before 1, need to push forward
-                                 };
+                            self.last_audio_beat_time = Some(now_t);
+                        } else if !have_stable_tempo {
+                            // Still building up tempo estimate, just track time
+                            self.last_audio_beat_time = Some(now_t);
+                        }
+                    }
+                }
+            }
 
-                                 // Store the error for gradual correction
-                                 self.phase_error = error;
-
-                                 // Update last confirmed audio beat time
-                                 self.last_audio_beat_time = Some(now_t);
-                             }
-                         } else {
-                             // First audio beat detected - initialize
-                             self.last_audio_beat_time = Some(now_t);
-                             // Snap immediately to nearest beat
-                             let current_phase = self.flywheel_beat.fract();
-                             if current_phase < 0.5 {
-                                 self.flywheel_beat = self.flywheel_beat.floor();
-                             } else {
-                                 self.flywheel_beat = self.flywheel_beat.ceil();
-                             }
-                             force_snap = true;
-                         }
-                     }
-                 }
-             }
-             self.was_peaking = is_peaking;
+            self.was_peaking = vol > (0.5 - self.audio_sensitivity * 0.45);
         }
 
         // Determine effective tempo
@@ -296,27 +301,7 @@ impl LightingEngine {
             self.sync_mode = true;
         } else if !force_snap {
             // Predict next beat based on current flywheel + tempo
-            // beat = beats/min * min/sec * sec
-            // beat_delta = (tempo / 60.0) * dt
-            // USE EFFECTIVE TEMPO
-            let mut predicted_beat = self.flywheel_beat + (effective_tempo / 60.0) * dt;
-
-            // Apply audio phase correction if hybrid sync is enabled
-            if self.hybrid_sync && self.phase_error.abs() > 0.001 {
-                // Gradually correct the phase error
-                let correction_amount = self.phase_correction_rate * dt;
-                let correction_to_apply = if self.phase_error.abs() < correction_amount {
-                    self.phase_error // Apply remaining error if small
-                } else {
-                    self.phase_error.signum() * correction_amount // Apply partial correction
-                };
-
-                predicted_beat += correction_to_apply;
-                self.phase_error -= correction_to_apply;
-
-                // Decay phase error over time to prevent accumulation
-                self.phase_error *= 0.95; // 5% decay per frame
-            }
+            let predicted_beat = self.flywheel_beat + (effective_tempo / 60.0) * dt;
 
             // Check difference with Link (if available)
             let diff = (link_beat - predicted_beat).abs();
@@ -335,7 +320,7 @@ impl LightingEngine {
                     self.flywheel_beat = link_beat;
                     self.sync_error_timer = 0.0;
                     self.sync_mode = true;
-                    self.phase_error = 0.0; // Reset audio phase error
+                    self.phase_offset = 0.0; // Reset audio phase offset
                 } else {
                     // Continue drifting/predicting but invalid sync
                     self.flywheel_beat = predicted_beat;
@@ -356,13 +341,22 @@ impl LightingEngine {
             }
         }
 
-        // Use flywheel_beat for animations
+        // Gradually decay phase offset when not receiving audio beats
+        // This prevents permanent drift if audio stops
+        if self.hybrid_sync {
+            let decay_rate = 0.02; // Decay 2% per frame
+            self.phase_offset *= 1.0 - decay_rate;
+        }
+
+        // Use flywheel_beat + phase_offset for animations
         // Safety check: ensure beat is valid (not NaN or infinite)
-        let beat = if self.flywheel_beat.is_finite() {
-            self.flywheel_beat
+        let raw_beat = self.flywheel_beat + self.phase_offset;
+        let beat = if raw_beat.is_finite() {
+            raw_beat
         } else {
-            log::warn!("Invalid flywheel_beat detected: {}, resetting to 0.0", self.flywheel_beat);
+            log::warn!("Invalid beat detected: {}, resetting", raw_beat);
             self.flywheel_beat = 0.0;
+            self.phase_offset = 0.0;
             0.0
         };
 
@@ -996,16 +990,8 @@ impl LightingEngine {
     }
 
     pub fn get_beat(&self) -> f64 {
-        if self.use_flywheel {
-            self.flywheel_beat
-        } else {
-            // Need to capture fresh or store last raw beat?
-            // self.flywheel logic already captures raw beat in update.
-            // But update is called once per frame.
-            // Let's store raw_beat in struct or just assume flywheel_beat is kept in sync if disabled?
-            // Better: update() logic should set flywheel_beat = link_beat if disabled.
-            self.flywheel_beat 
-        }
+        // Include phase offset for audio sync
+        self.flywheel_beat + self.phase_offset
     }
     
     pub fn get_time(&self) -> f32 {
