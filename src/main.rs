@@ -56,7 +56,14 @@ impl Default for ViewState {
 }
 
 fn main() -> eframe::Result<()> {
-    env_logger::init();
+    // Initialize logging - set RUST_LOG=debug for verbose output
+    // Example: RUST_LOG=debug ./Lightspeed.exe (Windows) or RUST_LOG=debug ./Lightspeed (macOS)
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
+        .format_timestamp_millis()
+        .init();
+
+    log::info!("Lightspeed Controller starting...");
+    log::info!("  Tip: Set RUST_LOG=debug for detailed connection logs");
 
     // Load app icon
     let icon_data = load_icon();

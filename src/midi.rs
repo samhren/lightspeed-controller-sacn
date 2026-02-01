@@ -3,6 +3,7 @@ use std::error::Error;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::thread;
 use std::time::Duration;
+use log::{info, debug, warn, error};
 
 pub enum MidiEvent {
     NoteOn { note: u8, velocity: u8 },
@@ -28,14 +29,42 @@ pub enum MidiCommand {
 
 // Detection Function (Runs on Main Thread)
 pub fn detect_launchpad() -> Option<MidiConnectionPayload> {
+    debug!("[MIDI] Scanning for Launchpad devices...");
+
     // Create new instances (Safe to do on Main Thread)
     // Using a more generic name for reuse if needed, or specific to detection
-    let mut midi_in = MidiInput::new("Lightspeed Input").ok()?;
+    let mut midi_in = match MidiInput::new("Lightspeed Input") {
+        Ok(m) => m,
+        Err(e) => {
+            error!("[MIDI] Failed to create MIDI input: {:?}", e);
+            return None;
+        }
+    };
     midi_in.ignore(Ignore::None);
-    let midi_out = MidiOutput::new("Lightspeed Output").ok()?;
+
+    let midi_out = match MidiOutput::new("Lightspeed Output") {
+        Ok(m) => m,
+        Err(e) => {
+            error!("[MIDI] Failed to create MIDI output: {:?}", e);
+            return None;
+        }
+    };
 
     let in_ports = midi_in.ports();
     let out_ports = midi_out.ports();
+
+    // Log available ports for debugging
+    debug!("[MIDI] Found {} input ports, {} output ports", in_ports.len(), out_ports.len());
+    for port in &in_ports {
+        if let Ok(name) = midi_in.port_name(port) {
+            debug!("[MIDI]   Input port: {}", name);
+        }
+    }
+    for port in &out_ports {
+        if let Ok(name) = midi_out.port_name(port) {
+            debug!("[MIDI]   Output port: {}", name);
+        }
+    }
 
     // Find Input - STRICT: only use ports with valid, readable names
     // 1. Prefer "Launchpad" AND "MIDI"
@@ -73,12 +102,10 @@ pub fn detect_launchpad() -> Option<MidiConnectionPayload> {
     });
 
     if let (Some(in_port), Some(out_port)) = (lp_in, lp_out) {
-        // Clone ports because we need to move them into the payload
-        // MidiPort is usually Clone, let's check. Yes, likely thin wrapper.
-        // If MidiPort isn't Clone, we'd have to use index, but midir ports are opaque structs.
-        // Checking docs or assumption: MidiPort usually implements Clone.
-        // If not, we have a problem because iter returns references.
-        // But midir::MidiPort IS Clone.
+        let in_name = midi_in.port_name(in_port).unwrap_or_else(|_| "Unknown".into());
+        let out_name = midi_out.port_name(out_port).unwrap_or_else(|_| "Unknown".into());
+        info!("[MIDI] Launchpad detected: In='{}', Out='{}'", in_name, out_name);
+
         return Some(MidiConnectionPayload {
             midi_in,
             midi_out,
@@ -87,6 +114,7 @@ pub fn detect_launchpad() -> Option<MidiConnectionPayload> {
         });
     }
 
+    debug!("[MIDI] No Launchpad device found");
     None
 }
 
@@ -94,28 +122,28 @@ pub fn start_midi_service(tx_to_app: Sender<MidiEvent>) -> Sender<MidiCommand> {
     let (tx_cmd, rx_cmd) = std::sync::mpsc::channel();
 
     thread::spawn(move || {
-        println!("MIDI Background Service Started");
-        
+        info!("[MIDI] Background service started, waiting for device connection...");
+
         loop {
             // Wait for a Connect command
             // We can block here because we have nothing else to do until we connect
             match rx_cmd.recv() {
                 Ok(MidiCommand::Connect(payload)) => {
-                    println!("Received MIDI connection payload. Connecting...");
-                    
+                    info!("[MIDI] Received connection payload, establishing connection...");
+
                     // Unbox and run the loop with the PRE-EXISTING instances
                     let res = run_midi_loop(
-                        &tx_to_app, 
-                        &rx_cmd, 
-                        *payload 
+                        &tx_to_app,
+                        &rx_cmd,
+                        *payload
                     );
-                    
+
                     if let Err(e) = res {
-                        println!("MIDI Loop ended with error: {:?}", e);
+                        error!("[MIDI] Connection ended with error: {:?}", e);
                         let _ = tx_to_app.send(MidiEvent::Disconnected);
                     }
-                    
-                    // After disconnect/error, go back to top of loop waiting for new connection
+
+                    info!("[MIDI] Disconnected, waiting for new device...");
                 },
                 Ok(_) => {
                     // Ignore other commands while disconnected
@@ -123,6 +151,7 @@ pub fn start_midi_service(tx_to_app: Sender<MidiEvent>) -> Sender<MidiCommand> {
                 Err(_) => break, // Channel closed
             }
         }
+        info!("[MIDI] Background service shutting down");
     });
 
     tx_cmd
@@ -133,13 +162,13 @@ fn run_midi_loop(
     rx_cmd: &Receiver<MidiCommand>,
     payload: MidiConnectionPayload,
 ) -> Result<(), Box<dyn Error>> {
-    
+
     // Deconstruct the payload
     let MidiConnectionPayload { midi_in, midi_out, in_port, out_port } = payload;
 
     let in_name = midi_in.port_name(&in_port).unwrap_or_else(|_| "Unknown".to_string());
     let out_name = midi_out.port_name(&out_port).unwrap_or_else(|_| "Unknown".to_string());
-    println!("Connecting to Launched Ports: In={}, Out={}", in_name, out_name);
+    info!("[MIDI] Connecting to Launchpad: In='{}', Out='{}'", in_name, out_name);
 
     let tx = tx_event.clone();
 
@@ -179,21 +208,22 @@ fn run_midi_loop(
         .map_err(|e| format!("Failed to connect output: {}", e))?;
 
     // === CRITICAL HANDSHAKE ===
-    thread::sleep(Duration::from_millis(200)); 
-    
+    debug!("[MIDI] Waiting 200ms before handshake...");
+    thread::sleep(Duration::from_millis(200));
+
     // Enter Programmer Mode
     // F0h 00h 20h 29h 02h 0Dh 0Eh 01h F7h
     let sysex = &[0xF0, 0x00, 0x20, 0x29, 0x02, 0x0D, 0x0E, 0x01, 0xF7];
     conn_out.send(sysex)?;
-    
-    println!("Launchpad Programmer Mode Enabled");
-    
+
+    info!("[MIDI] Launchpad Programmer Mode enabled");
+
     thread::sleep(Duration::from_millis(200)); // WAIT for mode switch
-    
+
     // Now send connected event
     let _ = tx_event.send(MidiEvent::Connected);
 
-    println!("Device Ready. Listening for commands...");
+    info!("[MIDI] Device ready, listening for commands...");
 
     // Process Commands
     loop {
@@ -212,10 +242,10 @@ fn run_midi_loop(
                     }
                 },
                 MidiCommand::Connect(_) => {
-                    println!("Received Connect command while already connected. Ignoring.");
+                    warn!("[MIDI] Received Connect command while already connected, ignoring");
                 },
                 MidiCommand::Disconnect => {
-                    println!("Disconnect requested by Watchdog.");
+                    info!("[MIDI] Disconnect requested");
                     break;
                 }
             },

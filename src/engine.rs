@@ -1,7 +1,8 @@
 use crate::model::{AppState, Mask, PixelStrip, NetworkConfig, GlobalEffect};
 use crate::audio::AudioListener;
-use sacn::source::SacnSource; 
+use sacn::source::SacnSource;
 use std::time::Instant;
+use log::{info, debug, warn, error};
 
 use rusty_link::{AblLink, SessionState};
 
@@ -68,21 +69,26 @@ pub struct LightingEngine {
 
 impl LightingEngine {
     pub fn new() -> Self {
+        info!("[LIGHTS] Initializing sACN (E1.31) network stack...");
+
         let local_addr = std::net::SocketAddr::from(([0, 0, 0, 0], 0));
+        debug!("[LIGHTS] Binding to address: {}", local_addr);
+
         let sender = SacnSource::with_ip("Lightspeed", local_addr)
             .unwrap_or_else(|e| {
-                log::error!("Failed to create sACN sender: {:?}", e);
-                log::warn!("Attempting fallback configuration...");
+                error!("[LIGHTS] Failed to create sACN sender: {:?}", e);
+                warn!("[LIGHTS] Attempting fallback configuration...");
                 // Try with explicit IPv4 any address as fallback
                 SacnSource::with_ip("Lightspeed", "0.0.0.0:0".parse().unwrap())
                     .expect("Critical: Cannot initialize network stack")
             });
-        // Start ensuring multicast send works?
-        // sacn crate defaults fine usually.
-        
-        // sender.set_unicast_destinations(...) if needed
+
+        info!("[LIGHTS] sACN sender initialized successfully");
+        debug!("[LIGHTS] Source name: 'Lightspeed', ready for multicast/unicast");
+
         let link = AblLink::new(120.0);
         link.enable(true);
+        info!("[LIGHTS] Ableton Link enabled at 120 BPM");
         
         Self {
             sender,
@@ -450,10 +456,10 @@ impl LightingEngine {
                 match self.sender.register_universe(u) {
                     Ok(_) => {
                         self.registered_universes.insert(u);
-                        println!("Registered sACN Universe {}", u);
+                        info!("[LIGHTS] Registered sACN Universe {}", u);
                     },
                     Err(e) => {
-                        println!("Failed to register sACN Universe {}: {:?}", u, e);
+                        error!("[LIGHTS] Failed to register sACN Universe {}: {:?}", u, e);
                     }
                 }
             }
@@ -483,10 +489,10 @@ impl LightingEngine {
 
             match self.sender.send(&[u], &fixed_data, Some(200), dst_ip, None) {
                 Ok(_) => {
-                    // Success, verbose logging might flood
+                    // Success - use trace level to avoid flooding logs
                 }
                 Err(e) => {
-                    println!("sACN Error sending to U{} (Dest: {:?}): {:?}", u, dst_ip, e);
+                    warn!("[LIGHTS] sACN send error on Universe {} (Dest: {:?}): {:?}", u, dst_ip, e);
                 }
             }
         }

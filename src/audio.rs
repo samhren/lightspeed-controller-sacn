@@ -1,6 +1,7 @@
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
+use log::{info, debug, warn};
 
 /// Audio state shared between the audio callback and the engine
 pub struct AudioState {
@@ -32,9 +33,35 @@ pub struct AudioListener {
 
 impl AudioListener {
     pub fn new() -> Option<Self> {
+        debug!("[AUDIO] Initializing audio input...");
+
         let host = cpal::default_host();
-        let device = host.default_input_device()?;
-        let config = device.default_input_config().ok()?;
+        debug!("[AUDIO] Using host: {:?}", host.id());
+
+        let device = match host.default_input_device() {
+            Some(d) => {
+                if let Ok(name) = d.name() {
+                    info!("[AUDIO] Using input device: {}", name);
+                }
+                d
+            }
+            None => {
+                warn!("[AUDIO] No audio input device found");
+                return None;
+            }
+        };
+
+        let config = match device.default_input_config() {
+            Ok(c) => {
+                debug!("[AUDIO] Config: {} Hz, {} channels, {:?}",
+                    c.sample_rate().0, c.channels(), c.sample_format());
+                c
+            }
+            Err(e) => {
+                warn!("[AUDIO] Failed to get input config: {:?}", e);
+                return None;
+            }
+        };
 
         let peak_flag = Arc::new(AtomicBool::new(false));
         let volume_level = Arc::new(Mutex::new(0.0));
@@ -50,15 +77,31 @@ impl AudioListener {
         let err_fn = |err| eprintln!("Audio stream error: {}", err);
 
         let stream = match config.sample_format() {
-            cpal::SampleFormat::F32 => device.build_input_stream(
-                &config.into(),
-                move |data: &[f32], _: &_| check_audio(data, &peak_clone, &vol_clone, &state_clone, sample_rate),
-                err_fn
-            ).ok()?,
-            _ => return None, // Only support F32 for simplicity right now
+            cpal::SampleFormat::F32 => {
+                match device.build_input_stream(
+                    &config.into(),
+                    move |data: &[f32], _: &_| check_audio(data, &peak_clone, &vol_clone, &state_clone, sample_rate),
+                    err_fn
+                ) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        warn!("[AUDIO] Failed to build input stream: {:?}", e);
+                        return None;
+                    }
+                }
+            },
+            other => {
+                warn!("[AUDIO] Unsupported sample format: {:?}", other);
+                return None;
+            }
         };
 
-        stream.play().ok()?;
+        if let Err(e) = stream.play() {
+            warn!("[AUDIO] Failed to start audio stream: {:?}", e);
+            return None;
+        }
+
+        info!("[AUDIO] Audio input initialized successfully");
 
         Some(Self {
             _stream: stream,
